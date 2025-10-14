@@ -25,6 +25,7 @@ export default function App() {
     musicTracks,
     selectedTrackId,
     exportPresets,
+    exportDownloads,
     renderStatus,
     insights,
     updateTask,
@@ -39,6 +40,7 @@ export default function App() {
     markPresetProgress,
     togglePreset,
     setRenderStatus,
+    setExportDownloads,
     setInsights,
     uploadRunId,
     reset,
@@ -55,6 +57,7 @@ export default function App() {
     musicTracks: state.musicTracks,
     selectedTrackId: state.selectedTrackId,
     exportPresets: state.exportPresets,
+    exportDownloads: state.exportDownloads,
     renderStatus: state.renderStatus,
     insights: state.insights,
     updateTask: state.updateTask,
@@ -69,6 +72,7 @@ export default function App() {
     markPresetProgress: state.markPresetProgress,
     togglePreset: state.togglePreset,
     setRenderStatus: state.setRenderStatus,
+    setExportDownloads: state.setExportDownloads,
     setInsights: state.setInsights,
     uploadRunId: state.uploadRunId,
     reset: state.reset,
@@ -198,6 +202,39 @@ export default function App() {
       updateTask('chunk-encoder', { status: 'running', progress: 5 })
       setStageStatus('analysis', 'active')
 
+      // Prefer Uppy + Tus if configured via Vite env
+      const tusEndpoint = (import.meta as any).env?.VITE_TUS_ENDPOINT as string | undefined
+      if (tusEndpoint) {
+        try {
+          const [{ default: Uppy }, { default: Tus }] = await Promise.all([
+            import('@uppy/core'),
+            import('@uppy/tus'),
+          ])
+          const uppy = new Uppy({ autoProceed: false })
+          uppy.use(Tus, {
+            endpoint: tusEndpoint,
+            retryDelays: [0, 1000, 3000, 5000],
+            chunkSize: 5 * 1024 * 1024,
+            removeFingerprintOnSuccess: true,
+          })
+          uppy.on('upload-progress', (_file: any, progress: any) => {
+            const pct = Math.min(95, Math.round(progress.percentage || 0))
+            updateTask('chunk-encoder', { progress: pct })
+            setProcessingProgress(Math.max(0.05, pct / 100))
+          })
+          uppy.on('complete', () => {
+            updateTask('chunk-encoder', { status: 'done', progress: 100 })
+            uppy.close()
+            ingestUpload({ file, previewUrl })
+          })
+          uppy.addFile({ data: file, name: file.name, type: file.type })
+          await uppy.upload()
+          return
+        } catch (e) {
+          // Fall back to presigned PUT if Uppy fails
+        }
+      }
+
       const { uploadUrl } = await api.createUploadUrl({ fileName: file.name, size: file.size, type: file.type })
 
       // Upload via XHR to track progress (fetch lacks upload progress events)
@@ -291,11 +328,16 @@ export default function App() {
 
             if (status.status === 'done') {
               enabled.forEach((p) => markPresetProgress(p.id, 100))
-              if (status.fileUrl) {
-                setRenderStatus(`Complete. Download: ${status.fileUrl}`)
-              } else {
-                setRenderStatus('All exports complete. Signed URLs ready.')
+              const payload = (status as any).payload
+              if (payload?.downloads) {
+                setExportDownloads(payload.downloads)
               }
+              // Refresh signed URLs via finalizeExport
+              try {
+                const fz = await api.finalizeExport({ renderJobId: jobId })
+                setExportDownloads(fz.downloads)
+              } catch {}
+              setRenderStatus('All exports complete. Signed URLs ready.')
               setStageStatus('export', 'complete')
               setIsRendering(false)
               window.clearInterval(poll)
@@ -377,6 +419,7 @@ export default function App() {
             onStartRender={handleStartRender}
             renderStatus={renderStatus}
             isRendering={isRendering}
+            downloads={exportDownloads}
           />
         )
       default:

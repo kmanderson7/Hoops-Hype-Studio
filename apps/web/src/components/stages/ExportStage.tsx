@@ -1,4 +1,4 @@
-import type { ExportPreset } from '../../state/useStudioState'
+import type { ExportPreset, ExportDownload } from '../../state/useStudioState'
 
 interface ExportStageProps {
   presets: ExportPreset[]
@@ -6,9 +6,10 @@ interface ExportStageProps {
   onStartRender: () => void
   renderStatus?: string
   isRendering: boolean
+  downloads?: ExportDownload[]
 }
 
-export function ExportStage({ presets, onTogglePreset, onStartRender, renderStatus, isRendering }: ExportStageProps) {
+export function ExportStage({ presets, onTogglePreset, onStartRender, renderStatus, isRendering, downloads }: ExportStageProps) {
   return (
     <section className="space-y-6">
       <header className="flex flex-wrap items-start justify-between gap-4">
@@ -72,6 +73,30 @@ export function ExportStage({ presets, onTogglePreset, onStartRender, renderStat
       {renderStatus && (
         <div className="rounded-3xl border border-white/10 bg-slate-900/60 p-4 text-sm text-slate-300">
           {renderStatus}
+        </div>
+      )}
+
+      {downloads && downloads.length > 0 && (
+        <div className="rounded-3xl border border-emerald-400/20 bg-emerald-500/5 p-4">
+          <p className="text-xs uppercase tracking-[0.16em] text-emerald-200/80">Downloads</p>
+          <ul className="mt-3 space-y-2 text-sm">
+            {downloads.map((d) => (
+              <li key={d.presetId} className="flex items-center justify-between rounded-xl border border-white/10 bg-slate-950/60 p-3">
+                <div>
+                  <p className="font-medium text-white">{d.presetId}</p>
+                  <p className="text-xs text-slate-400">Expires {new Date(d.expiresAt).toLocaleString()}</p>
+                </div>
+                <a
+                  href={d.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="rounded-full border border-emerald-400/40 bg-emerald-400/10 px-3 py-1 text-xs font-semibold text-emerald-100 hover:bg-emerald-400/20"
+                >
+                  Download
+                </a>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
     </section>

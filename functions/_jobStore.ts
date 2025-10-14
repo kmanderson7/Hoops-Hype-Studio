@@ -19,10 +19,24 @@ export interface RenderJob {
 }
 
 const jobs = new Map<string, RenderJob>()
+const useRedis = !!(process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN)
+let redisStore: typeof import('./_jobStore_redis') | undefined
+if (useRedis) {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    redisStore = require('./_jobStore_redis')
+  } catch {
+    // ignore, fallback to memory
+  }
+}
 
 const randomMs = (min: number, max: number) => Math.floor(min + Math.random() * (max - min))
 
 export function createRenderJob(params: { assetId?: string; trackId?: string; presets: string[] }): RenderJob {
+  if (useRedis && redisStore?.createRenderJob) {
+    // @ts-expect-error async boundary hidden from caller; used only by our handlers
+    return redisStore.createRenderJob(params)
+  }
   const id = `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
   const durationMs = randomMs(4000, 9000)
   const job: RenderJob = {
@@ -39,6 +53,10 @@ export function createRenderJob(params: { assetId?: string; trackId?: string; pr
 }
 
 export function getRenderJob(id: string) {
+  if (useRedis && redisStore?.getRenderJob) {
+    // @ts-expect-error
+    return redisStore.getRenderJob(id)
+  }
   return jobs.get(id)
 }
 
@@ -49,6 +67,10 @@ export function getRenderJobStatus(id: string): {
   presets: RenderPresetProgress[]
   downloads?: { presetId: string; url: string; expiresAt: string }[]
 } | undefined {
+  if (useRedis && redisStore?.getRenderJobStatus) {
+    // @ts-expect-error
+    return redisStore.getRenderJobStatus(id)
+  }
   const job = jobs.get(id)
   if (!job) return undefined
 
@@ -88,6 +110,10 @@ export function getRenderJobStatus(id: string): {
 }
 
 export function setRenderJobDownloads(id: string, outputs: { presetId: string; url: string }[]) {
+  if (useRedis && redisStore?.setRenderJobDownloads) {
+    // @ts-expect-error
+    return redisStore.setRenderJobDownloads(id, outputs)
+  }
   const job = jobs.get(id)
   if (!job) return
   const exp = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()

@@ -55,6 +55,12 @@ export interface ExportPreset {
   progress: number
 }
 
+export interface ExportDownload {
+  presetId: string
+  url: string
+  expiresAt: string
+}
+
 interface StageMeta {
   key: StageKey
   label: string
@@ -89,6 +95,7 @@ export interface StudioState {
   musicTracks: MusicTrack[]
   selectedTrackId?: string
   exportPresets: ExportPreset[]
+  exportDownloads: ExportDownload[]
   renderStatus?: string
   insights: {
     accuracy: number
@@ -109,6 +116,7 @@ export interface StudioState {
   togglePreset: (presetId: string) => void
   markPresetProgress: (presetId: string, progress: number) => void
   setRenderStatus: (message?: string) => void
+  setExportDownloads: (items: ExportDownload[]) => void
   setInsights: (metrics: StudioState['insights']) => void
   reset: () => void
 }
@@ -196,6 +204,7 @@ export const useStudioState = create<StudioState>((set) => ({
   energyCurve: [],
   musicTracks: [],
   exportPresets: defaultPresets,
+  exportDownloads: [],
   insights: {
     accuracy: 0,
     beatAlignment: 0,
@@ -281,6 +290,7 @@ export const useStudioState = create<StudioState>((set) => ({
       ),
     })),
   setRenderStatus: (renderStatus) => set({ renderStatus }),
+  setExportDownloads: (items) => set({ exportDownloads: items }),
   setInsights: (metrics) => set({ insights: metrics }),
   reset: () =>
     set({
@@ -296,6 +306,7 @@ export const useStudioState = create<StudioState>((set) => ({
       musicTracks: [],
       selectedTrackId: undefined,
       exportPresets: defaultPresets,
+      exportDownloads: [],
       renderStatus: undefined,
       insights: {
         accuracy: 0,

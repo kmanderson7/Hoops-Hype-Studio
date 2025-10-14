@@ -37,4 +37,6 @@ export const api = {
       'getJobStatus',
       payload,
     ),
+  finalizeExport: (payload: { renderJobId: string }) =>
+    postJson<{ downloads: { presetId: string; url: string; expiresAt: string }[] }>('finalizeExport', payload),
 }
