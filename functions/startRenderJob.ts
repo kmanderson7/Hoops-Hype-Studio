@@ -15,7 +15,8 @@ export const handler: Handler = async (evt) => {
     if (!presetIds.length) {
       return { statusCode: 400, body: JSON.stringify({ title: 'Invalid input', detail: 'presets[] required' }) }
     }
-    const job = createRenderJob({ assetId: body.assetId, trackId: body.trackId, presets: presetIds })
+    const job = await (createRenderJob as any)({ assetId: body.assetId, trackId: body.trackId, presets: presetIds })
+    console.log(JSON.stringify({ level: 'info', msg: 'render_job_created', jobId: job.id, presets: presetIds }))
 
     // If GPU worker is configured, kick off render immediately and capture outputs
     if (GPU_WORKER_BASE_URL && GPU_WORKER_TOKEN) {
@@ -33,7 +34,7 @@ export const handler: Handler = async (evt) => {
         if (res.ok) {
           const data = await res.json()
           if (data?.outputs) {
-            setRenderJobDownloads(job.id, data.outputs)
+            await (setRenderJobDownloads as any)(job.id, data.outputs)
           }
         }
       } catch {
@@ -43,6 +44,7 @@ export const handler: Handler = async (evt) => {
 
     return { statusCode: 200, body: JSON.stringify({ renderJobId: job.id, jobId: job.id }) }
   } catch (e: any) {
+    console.error(JSON.stringify({ level: 'error', msg: 'start_render_failed', err: e?.message }))
     return { statusCode: 500, body: JSON.stringify({ title: 'Server error', detail: e?.message || String(e) }) }
   }
 }

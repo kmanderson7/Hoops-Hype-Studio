@@ -10,6 +10,7 @@ interface ExportStageProps {
 }
 
 export function ExportStage({ presets, onTogglePreset, onStartRender, renderStatus, isRendering, downloads }: ExportStageProps) {
+  const labelFor = (presetId: string) => presets.find((p) => p.id === presetId)?.label || presetId
   return (
     <section className="space-y-6">
       <header className="flex flex-wrap items-start justify-between gap-4">
@@ -83,7 +84,7 @@ export function ExportStage({ presets, onTogglePreset, onStartRender, renderStat
             {downloads.map((d) => (
               <li key={d.presetId} className="flex items-center justify-between rounded-xl border border-white/10 bg-slate-950/60 p-3">
                 <div>
-                  <p className="font-medium text-white">{d.presetId}</p>
+                  <p className="font-medium text-white">{labelFor(d.presetId)}</p>
                   <p className="text-xs text-slate-400">Expires {new Date(d.expiresAt).toLocaleString()}</p>
                 </div>
                 <a

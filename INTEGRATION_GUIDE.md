@@ -282,3 +282,43 @@ Then swap calls in stages to use the client and update Zustand state with real d
 - API reference: see `API.md` for endpoint contracts and data models used by the frontend.
 - GPU worker deploy: see `DEPLOY_MODAL.md` for deploying the Modal FastAPI worker and setting secrets.
 - Netlify local dev: `netlify dev` alongside `pnpm -C apps/web dev` to proxy `/.netlify/functions/*`.
+
+---
+
+## 10. Upload: Tus/Uppy and Presigned PUT
+
+Two supported paths for resilient uploads:
+
+- Uppy + Tus (recommended for >1 GB, resume/retry)
+  - Frontend: set `VITE_TUS_ENDPOINT=https://your-tus-server/files` in `apps/web/.env` (Vite env)
+  - The Upload stage auto-detects this env and uses Tus with chunking and retries.
+  - Local dev: run a quick Tus server via npx:
+    - `npx tus-node-server --port 1080 --host 0.0.0.0 --path /files`
+    - Then set `VITE_TUS_ENDPOINT=http://localhost:1080/files`
+  - CORS: allow your Netlify/Vite origin to PUT/OPTIONS/POST at the Tus endpoint.
+
+- Presigned PUT (S3/R2) for smaller files
+  - Backend: `functions/createUploadUrl.ts` returns a SigV4 presigned URL
+  - Env: `STORAGE_BUCKET`, `STORAGE_REGION`, `STORAGE_ACCESS_KEY`, `STORAGE_SECRET_KEY`, optional `STORAGE_ENDPOINT` (R2)
+  - Bucket CORS example (S3):
+```
+[
+  {
+    "AllowedHeaders": ["*"],
+    "AllowedMethods": ["PUT", "GET", "HEAD", "POST"],
+    "AllowedOrigins": ["https://your-site.netlify.app", "http://localhost:5173"],
+    "ExposeHeaders": ["ETag"],
+    "MaxAgeSeconds": 3000
+  }
+]
+```
+
+## 11. Job Store: Upstash Redis
+
+- Set `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` in Netlify
+- Functions auto-switch from in-memory store to Redis-backed store for job creation/status and downloads
+
+## 12. Music Provider (Pixabay)
+
+- Set `MUSIC_API_KEY` and `MUSIC_API_BASE_URL` (e.g., `https://pixabay.com/api`) and update `functions/recommendMusic.ts`
+- The function normalizes provider responses to `MusicTrack` shape (title, bpm, mood, key, license, previewUrl)

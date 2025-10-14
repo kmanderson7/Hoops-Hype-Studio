@@ -17,6 +17,8 @@ from typing import List, Optional
 import modal
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
+import boto3
+from botocore.config import Config as BotoConfig
 
 
 app = modal.App("hoops-hype-studio-worker")
@@ -157,10 +159,41 @@ async def highlights(req: HighlightRequest, authorization: Optional[str] = Heade
 async def render(req: RenderRequest, authorization: Optional[str] = Header(None)):
     _require_auth(authorization)
     # TODO: orchestrate ffmpeg pipeline, overlays/branding, and upload outputs to storage
-    outputs = [
-        RenderOutput(presetId=p.presetId, url=f"https://storage.example/exports/{req.assetId}-{p.presetId}.mp4")
-        for p in req.presets
-    ]
+    # Placeholder: generate signed GET URLs for expected export keys
+    bucket = os.environ.get("STORAGE_BUCKET", "")
+    region = os.environ.get("STORAGE_REGION", "us-east-1")
+    access = os.environ.get("STORAGE_ACCESS_KEY", "")
+    secret = os.environ.get("STORAGE_SECRET_KEY", "")
+    endpoint = os.environ.get("STORAGE_ENDPOINT")
+
+    s3 = None
+    if bucket and access and secret:
+        session = boto3.session.Session()
+        s3 = session.client(
+            "s3",
+            region_name=region,
+            aws_access_key_id=access,
+            aws_secret_access_key=secret,
+            endpoint_url=endpoint,
+            config=BotoConfig(s3={"addressing_style": "path"}),
+        )
+
+    outputs: list[RenderOutput] = []
+    for p in req.presets:
+        key = f"exports/{req.assetId}-{p.presetId}.mp4"
+        if s3:
+            try:
+                url = s3.generate_presigned_url(
+                    ClientMethod="get_object",
+                    Params={"Bucket": bucket, "Key": key},
+                    ExpiresIn=3600,
+                )
+            except Exception:
+                url = f"https://example.com/{key}"
+        else:
+            url = f"https://example.com/{key}"
+        outputs.append(RenderOutput(presetId=p.presetId, url=url))
+
     return RenderResponse(outputs=outputs)
 
 

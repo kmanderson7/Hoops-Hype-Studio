@@ -25,6 +25,7 @@ export const handler: Handler = async (evt) => {
     const key = `uploads/${assetId}/${fileName}`
 
     if (!STORAGE_BUCKET || !STORAGE_ACCESS_KEY || !STORAGE_SECRET_KEY) {
+      console.log(JSON.stringify({ level: 'info', msg: 'createUploadUrl dev fallback', assetId }))
       // Development fallback
       return { statusCode: 200, body: JSON.stringify({ assetId, uploadUrl: 'https://example.com/put', proxyUrl: undefined }) }
     }
@@ -41,8 +42,10 @@ export const handler: Handler = async (evt) => {
       contentType: body.type,
     })
 
+    console.log(JSON.stringify({ level: 'info', msg: 'presigned_url_issued', assetId, key }))
     return { statusCode: 200, body: JSON.stringify({ assetId, uploadUrl, key }) }
   } catch (e: any) {
+    console.error(JSON.stringify({ level: 'error', msg: 'createUploadUrl_failed', err: e?.message }))
     return { statusCode: 500, body: JSON.stringify({ title: 'Server error', detail: e?.message || String(e) }) }
   }
 }
