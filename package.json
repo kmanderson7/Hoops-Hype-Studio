@@ -1,0 +1,19 @@
+{
+  "name": "hoops-hype-studio",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "functions",
+    "workers"
+  ],
+  "scripts": {
+    "dev": "pnpm -C apps/web dev",
+    "typecheck": "tsc -b --pretty",
+    "build": "pnpm -r run build",
+    "e2e": "playwright test",
+    "fmt": "prettier -w .",
+    "test": "vitest run",
+    "lint": "eslint . --ext .ts,.tsx,.js,.jsx"
+  }
+}

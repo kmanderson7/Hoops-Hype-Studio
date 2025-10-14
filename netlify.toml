@@ -1,0 +1,12 @@
+[build]
+  command = "pnpm -C apps/web build"
+  publish = "apps/web/dist"
+
+[functions]
+  node_bundler = "esbuild"
+  included_files = ["packages/**/*", "functions/**/*"]
+
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/:splat"
+  status = 200
