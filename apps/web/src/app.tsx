@@ -239,7 +239,7 @@ export default function App() {
         }
       }
 
-      const { uploadUrl } = await api.createUploadUrl({ fileName: file.name, size: file.size, type: file.type })
+      const { uploadUrl, assetId, key } = await api.createUploadUrl({ fileName: file.name, size: file.size, type: file.type })
 
       // Upload via XHR to track progress (fetch lacks upload progress events)
       await new Promise<void>((resolve, reject) => {
@@ -265,6 +265,16 @@ export default function App() {
       })
 
       // Trigger ingest to analysis pipeline (UI effect will handle API calls)
+      if (assetId && key) {
+        try {
+          const ingest = await api.ingestAsset({ assetId, key })
+          if (ingest?.proxyUrl) {
+            setRenderStatus('Proxy generated; proceeding to analysis...')
+          }
+        } catch (e) {
+          setRenderStatus(`Ingest error: ${e}`)
+        }
+      }
       ingestUpload({ file, previewUrl })
     } catch (e) {
       setRenderStatus(`Upload error: ${e}`)

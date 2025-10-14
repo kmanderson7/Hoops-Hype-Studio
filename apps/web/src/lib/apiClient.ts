@@ -39,4 +39,5 @@ export const api = {
     ),
   finalizeExport: (payload: { renderJobId: string }) =>
     postJson<{ downloads: { presetId: string; url: string; expiresAt: string }[] }>('finalizeExport', payload),
+  ingestAsset: (payload: { assetId: string; key: string }) => postJson<{ proxyUrl?: string; waveformUrl?: string }>('ingestAsset', payload),
 }
