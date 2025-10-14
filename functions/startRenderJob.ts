@@ -1,5 +1,7 @@
 import type { Handler } from '@netlify/functions'
-import { createRenderJob } from './_jobStore'
+import { createRenderJob, setRenderJobDownloads } from './_jobStore'
+
+const { GPU_WORKER_BASE_URL = '', GPU_WORKER_TOKEN = '' } = process.env
 
 export const handler: Handler = async (evt) => {
   try {
@@ -14,6 +16,31 @@ export const handler: Handler = async (evt) => {
       return { statusCode: 400, body: JSON.stringify({ title: 'Invalid input', detail: 'presets[] required' }) }
     }
     const job = createRenderJob({ assetId: body.assetId, trackId: body.trackId, presets: presetIds })
+
+    // If GPU worker is configured, kick off render immediately and capture outputs
+    if (GPU_WORKER_BASE_URL && GPU_WORKER_TOKEN) {
+      try {
+        const res = await fetch(`${GPU_WORKER_BASE_URL}/render`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${GPU_WORKER_TOKEN}` },
+          body: JSON.stringify({
+            assetId: body.assetId,
+            trackUrl: body.metadata && (body.metadata as any).trackUrl,
+            presets: presetIds.map((p) => ({ presetId: p })),
+            metadata: body.metadata || {},
+          }),
+        })
+        if (res.ok) {
+          const data = await res.json()
+          if (data?.outputs) {
+            setRenderJobDownloads(job.id, data.outputs)
+          }
+        }
+      } catch {
+        // ignore worker errors; job will still simulate progress
+      }
+    }
+
     return { statusCode: 200, body: JSON.stringify({ renderJobId: job.id, jobId: job.id }) }
   } catch (e: any) {
     return { statusCode: 500, body: JSON.stringify({ title: 'Server error', detail: e?.message || String(e) }) }

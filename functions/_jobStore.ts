@@ -87,3 +87,10 @@ export function getRenderJobStatus(id: string): {
   return { status, progress, eta, presets, downloads }
 }
 
+export function setRenderJobDownloads(id: string, outputs: { presetId: string; url: string }[]) {
+  const job = jobs.get(id)
+  if (!job) return
+  const exp = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+  job.downloads = outputs.map((o) => ({ presetId: o.presetId, url: o.url, expiresAt: exp }))
+  jobs.set(id, job)
+}

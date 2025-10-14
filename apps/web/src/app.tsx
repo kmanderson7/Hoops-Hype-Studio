@@ -193,8 +193,41 @@ export default function App() {
     [musicTracks, selectedTrackId],
   )
 
-  const handleFileAccepted = (file: File, previewUrl: string) => {
-    ingestUpload({ file, previewUrl })
+  const handleFileAccepted = async (file: File, previewUrl: string) => {
+    try {
+      updateTask('chunk-encoder', { status: 'running', progress: 5 })
+      setStageStatus('analysis', 'active')
+
+      const { uploadUrl } = await api.createUploadUrl({ fileName: file.name, size: file.size, type: file.type })
+
+      // Upload via XHR to track progress (fetch lacks upload progress events)
+      await new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest()
+        xhr.open('PUT', uploadUrl, true)
+        xhr.upload.onprogress = (evt) => {
+          if (!evt.lengthComputable) return
+          const pct = Math.min(95, Math.round((evt.loaded / evt.total) * 100))
+          updateTask('chunk-encoder', { progress: pct })
+          setProcessingProgress(Math.max(0.05, pct / 100))
+        }
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            updateTask('chunk-encoder', { status: 'done', progress: 100 })
+            resolve()
+          } else {
+            reject(new Error(`Upload failed: ${xhr.status}`))
+          }
+        }
+        xhr.onerror = () => reject(new Error('Upload network error'))
+        xhr.setRequestHeader('content-type', file.type)
+        xhr.send(file)
+      })
+
+      // Trigger ingest to analysis pipeline (UI effect will handle API calls)
+      ingestUpload({ file, previewUrl })
+    } catch (e) {
+      setRenderStatus(`Upload error: ${e}`)
+    }
   }
 
   const handleAdvanceFromAnalysis = () => {

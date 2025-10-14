@@ -24,6 +24,8 @@ type RecommendMusicFn = {
 }
 
 export const api = {
+  createUploadUrl: (payload: { fileName: string; size: number; type: string }) =>
+    postJson<{ assetId: string; uploadUrl: string; proxyUrl?: string }>('createUploadUrl', payload),
   detectHighlights: (payload: { videoUrl?: string }) => postJson<DetectHighlightsFn>('detectHighlights', payload),
   detectBeats: (payload: { assetId?: string; trackId?: string }) => postJson<DetectBeatsFn>('detectBeats', payload),
   recommendMusic: (payload: { assetId?: string; playStyle?: string; targetLength?: number }) =>
