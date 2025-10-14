@@ -7,13 +7,7 @@ import { MusicStage } from './components/stages/MusicStage'
 import { EditorStage } from './components/stages/EditorStage'
 import { ExportStage } from './components/stages/ExportStage'
 import { useStudioState, type StageKey } from './state/useStudioState'
-import {
-  buildMockBeatMarkers,
-  buildMockEnergyCurve,
-  buildMockHighlights,
-  buildMockInsights,
-  buildMockTracks,
-} from './data/mockData'
+import { api } from './lib/apiClient'
 
 export default function App() {
   const [isRendering, setIsRendering] = useState(false)
@@ -83,66 +77,105 @@ export default function App() {
   useEffect(() => {
     if (!uploadRunId) return
 
-    let progressValue = 0.2
+    let progressValue = 0.15
     setProcessingProgress(progressValue)
     setStageStatus('analysis', 'active')
-    updateTask('chunk-encoder', { status: 'running', progress: 15 })
+    updateTask('chunk-encoder', { status: 'running', progress: 10 })
 
-    const timeouts: number[] = []
-    const intervals: number[] = []
+    const tick = window.setInterval(() => {
+      progressValue = Math.min(0.97, progressValue + 0.03)
+      setProcessingProgress(progressValue)
+    }, 450)
 
-    intervals.push(
-      window.setInterval(() => {
-        progressValue = Math.min(0.98, progressValue + 0.05)
-        setProcessingProgress(progressValue)
-      }, 420),
-    )
-
-    timeouts.push(
-      window.setTimeout(() => {
-        updateTask('chunk-encoder', { status: 'done', progress: 100 })
-        updateTask('highlight-detection', { status: 'running', progress: 15 })
-      }, 900),
-    )
-
-    timeouts.push(
-      window.setTimeout(() => {
-        const highlights = buildMockHighlights()
-        setHighlights(highlights)
+    ;(async () => {
+      try {
+        // Step 1: Highlights
+        updateTask('highlight-detection', { status: 'running', progress: 10 })
+        const hi = await api.detectHighlights({ videoUrl: fileInfo?.previewUrl })
+        const mapped = hi.segments.map((s, i) => {
+          const action = s.label === 'dunk' ? 'Dunk' : s.label === 'three' ? 'Three Pointer' : 'Assist'
+          const clipDuration = Math.max(0, s.end - s.start)
+          const mm = Math.floor(s.start / 60)
+          const ss = Math.round(s.start % 60)
+          const timestamp = `${mm > 0 ? `${mm}m ` : ''}${String(ss).padStart(2, '0')}`
+          return {
+            id: s.id || `seg-${i + 1}`,
+            timestamp,
+            action: action as any,
+            descriptor: `${action} — auto-detected`,
+            confidence: s.confidence ?? 0.9,
+            audioPeak: 0.6,
+            motion: 0.7,
+            score: s.score ?? 0.85,
+            clipDuration,
+          }
+        })
+        setHighlights(mapped)
         updateTask('highlight-detection', { status: 'done', progress: 100 })
+
+        // Step 2: Beats
         updateTask('beat-sync', { status: 'running', progress: 20 })
-      }, 1700),
-    )
-
-    timeouts.push(
-      window.setTimeout(() => {
-        setBeatMarkers(buildMockBeatMarkers())
-        setEnergyCurve(buildMockEnergyCurve())
+        const beats = await api.detectBeats({})
+        const markers = beats.beatGrid.map((t, idx) => ({ id: `beat-${idx}`, time: t, intensity: idx % 4 === 0 ? 0.92 : 0.6 }))
+        setBeatMarkers(markers)
+        // derive a lightweight energy curve from beats
+        const curve = Array.from({ length: Math.min(20, markers.length) }, (_, i) =>
+          0.5 + 0.5 * Math.sin(i / 3),
+        )
+        setEnergyCurve(curve)
         updateTask('beat-sync', { status: 'done', progress: 100 })
-        updateTask('music-intel', { status: 'running', progress: 25 })
-      }, 2500),
-    )
 
-    timeouts.push(
-      window.setTimeout(() => {
-        const tracks = buildMockTracks()
+        // Step 3: Music
+        updateTask('music-intel', { status: 'running', progress: 25 })
+        const rec = await api.recommendMusic({})
+        const tracks = rec.tracks.map((t, i) => ({
+          id: `track-${i + 1}`,
+          title: t.title,
+          artist: 'Unknown',
+          bpm: t.bpm,
+          mood: (['High Energy', 'Hybrid Trap', 'Anthemic', 'Electro Drive'].includes(t.mood)
+            ? t.mood
+            : 'High Energy') as any,
+          energyLevel: Math.round(Math.min(1, Math.max(0, t.energy)) * 100),
+          matchScore: 90 - i * 3,
+          key: 'E Minor',
+          previewUrl: t.url,
+          waveform: Array.from({ length: 32 }, (_, idx) => {
+            const v = 0.7 + Math.sin(idx / 3) * 0.15
+            return Math.min(1, Math.max(0.25, v))
+          }),
+        }))
         setMusicTracks(tracks)
-        setInsights(buildMockInsights())
-        updateTask('music-intel', { status: 'done', progress: 100 })
+
+        // Insights (basic derived placeholder)
+        const avgConf = mapped.reduce((a, b) => a + (b.confidence || 0.8), 0) / Math.max(mapped.length, 1)
+        const avgBeat = 0.8
+        const avgEnergy = markers.reduce((a, b) => a + b.intensity, 0) / Math.max(markers.length, 1)
+        setInsights({
+          accuracy: avgConf,
+          beatAlignment: avgBeat,
+          crowdEnergy: Math.min(1, avgEnergy),
+          notes: [
+            mapped[0]?.descriptor ? `Top moment: ${mapped[0].descriptor}` : 'Highlights detected',
+            `Beat grid length: ${markers.length}`,
+          ],
+        })
+
         progressValue = 1
         setProcessingProgress(progressValue)
         setStageStatus('analysis', 'complete')
         setStageStatus('music', 'active')
         setCurrentStage('music')
-      }, 3300),
-    )
-
-    return () => {
-      intervals.forEach((intervalId) => window.clearInterval(intervalId))
-      timeouts.forEach((timeoutId) => window.clearTimeout(timeoutId))
-    }
+      } catch (err) {
+        setRenderStatus(`Analysis error: ${err}`)
+        setStageStatus('analysis', 'pending')
+      } finally {
+        window.clearInterval(tick)
+      }
+    })()
   }, [
     uploadRunId,
+    fileInfo?.previewUrl,
     setProcessingProgress,
     setStageStatus,
     updateTask,
@@ -152,6 +185,7 @@ export default function App() {
     setMusicTracks,
     setInsights,
     setCurrentStage,
+    setRenderStatus,
   ])
 
   const selectedTrack = useMemo(

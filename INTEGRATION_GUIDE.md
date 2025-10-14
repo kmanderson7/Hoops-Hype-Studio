@@ -142,3 +142,143 @@ Keep secure credentials in Netlify’s environment manager (never commit `.env` 
 5. Run end-to-end flow on Netlify preview deploy before enabling public access.
 
 Once these integrations are complete, the UI can drop the current mock timers and render real hype videos from user footage.
+
+---
+
+## 8. Modal Integration (Worker Wiring)
+
+This project assumes a GPU Worker running on Modal, exposed as a FastAPI app with endpoints:
+
+- `POST /ingest` → prepare proxy and waveform
+- `POST /highlights` → compute highlight segments
+- `POST /render` → produce final exports per preset
+
+Configure these in Netlify as environment variables:
+
+```
+GPU_WORKER_BASE_URL=https://your-modal-app--api.modal.run
+GPU_WORKER_TOKEN=supersecrettoken
+```
+
+### 8.1 Netlify Functions → Modal examples
+
+Detect Highlights (TypeScript):
+
+```ts
+// functions/detectHighlights.ts
+import type { Handler } from '@netlify/functions'
+
+const { GPU_WORKER_BASE_URL = '', GPU_WORKER_TOKEN = '' } = process.env
+
+export const handler: Handler = async (evt) => {
+  const body = JSON.parse(evt.body || '{}') as { assetId: string; proxyUrl?: string }
+  if (!body.assetId) {
+    return { statusCode: 400, body: JSON.stringify({ title: 'Invalid input', detail: 'assetId required' }) }
+  }
+
+  const res = await fetch(`${GPU_WORKER_BASE_URL}/highlights`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${GPU_WORKER_TOKEN}`,
+    },
+    body: JSON.stringify({ assetId: body.assetId, proxyUrl: body.proxyUrl }),
+  })
+  if (!res.ok) return { statusCode: res.status, body: await res.text() }
+  const data = await res.json()
+  return { statusCode: 200, body: JSON.stringify(data) }
+}
+```
+
+Start Render Job:
+
+```ts
+// functions/startRenderJob.ts
+import type { Handler } from '@netlify/functions'
+const { GPU_WORKER_BASE_URL = '', GPU_WORKER_TOKEN = '' } = process.env
+
+export const handler: Handler = async (evt) => {
+  const body = JSON.parse(evt.body || '{}') as {
+    assetId: string
+    trackUrl: string
+    presets: { presetId: string }[]
+    metadata?: Record<string, unknown>
+  }
+  if (!body.assetId || !body.trackUrl || !Array.isArray(body.presets)) {
+    return { statusCode: 400, body: JSON.stringify({ title: 'Invalid input' }) }
+  }
+  const res = await fetch(`${GPU_WORKER_BASE_URL}/render`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${GPU_WORKER_TOKEN}` },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) return { statusCode: res.status, body: await res.text() }
+  const data = await res.json()
+  return { statusCode: 200, body: JSON.stringify(data) }
+}
+```
+
+Create Upload URL (presigned S3/R2) — sketch:
+
+```ts
+// functions/createUploadUrl.ts
+import type { Handler } from '@netlify/functions'
+// import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
+// import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
+
+export const handler: Handler = async (evt) => {
+  const body = JSON.parse(evt.body || '{}') as { fileName?: string; type?: string; size?: number }
+  if (!body.fileName || !body.type || !body.size) {
+    return { statusCode: 400, body: JSON.stringify({ title: 'Invalid input' }) }
+  }
+  // TODO: validate size < 5GB, sanitize name, create key
+  // const uploadUrl = await getSignedUrl(client, new PutObjectCommand({ Bucket, Key, ContentType: body.type }), { expiresIn: 900 })
+  // return { statusCode: 200, body: JSON.stringify({ assetId, uploadUrl, proxyUrl }) }
+  return { statusCode: 200, body: JSON.stringify({ assetId: 'demo', uploadUrl: 'https://signed.url', proxyUrl: undefined }) }
+}
+```
+
+### 8.2 Frontend API Client (typed)
+
+Create `apps/web/src/lib/apiClient.ts` and use React Query in stages instead of mocks.
+
+```ts
+// apps/web/src/lib/apiClient.ts
+export async function post<T>(path: string, payload: unknown): Promise<T> {
+  const res = await fetch(`/.netlify/functions${path}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json() as Promise<T>
+}
+
+export type BeatMarker = { id: string; time: number; intensity: number }
+export type HighlightSegment = {
+  id: string; timestamp: string; action: string; descriptor: string;
+  confidence: number; audioPeak: number; motion: number; score: number; clipDuration: number
+}
+
+export function detectHighlights(assetId: string, proxyUrl?: string) {
+  return post<{ segments: HighlightSegment[] }>(`/detectHighlights`, { assetId, proxyUrl })
+}
+
+export function detectBeats(assetId: string, trackId?: string) {
+  return post<{ beats: BeatMarker[] }>(`/detectBeats`, { assetId, trackId })
+}
+
+export function recommendMusic(assetId: string, playStyle: string, targetLength: number) {
+  return post<{ tracks: any[] }>(`/recommendMusic`, { assetId, playStyle, targetLength })
+}
+```
+
+Then swap calls in stages to use the client and update Zustand state with real data.
+
+---
+
+## 9. References
+
+- API reference: see `API.md` for endpoint contracts and data models used by the frontend.
+- GPU worker deploy: see `DEPLOY_MODAL.md` for deploying the Modal FastAPI worker and setting secrets.
+- Netlify local dev: `netlify dev` alongside `pnpm -C apps/web dev` to proxy `/.netlify/functions/*`.
