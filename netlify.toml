@@ -6,6 +6,10 @@
   node_bundler = "esbuild"
   included_files = ["packages/**/*", "functions/**/*"]
 
+[[edge_functions]]
+  path = "/.netlify/functions/*"
+  function = "security"
+
 [[redirects]]
   from = "/api/*"
   to = "/.netlify/functions/:splat"

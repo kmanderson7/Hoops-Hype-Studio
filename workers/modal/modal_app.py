@@ -19,6 +19,10 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 import boto3
 from botocore.config import Config as BotoConfig
+import subprocess
+import tempfile
+import pathlib
+import urllib.request
 
 
 app = modal.App("hoops-hype-studio-worker")
@@ -116,12 +120,60 @@ web = FastAPI(title="Hoops Hype Studio — GPU Worker")
 @web.post("/ingest", response_model=IngestResponse)
 async def ingest(req: IngestRequest, authorization: Optional[str] = Header(None)):
     _require_auth(authorization)
-    # TODO: download from storage, transcode to 720p proxy, compute waveform
-    # For now, return stubbed URLs pointing to where your storage would place them
-    return IngestResponse(
-        proxyUrl=f"https://storage.example/proxy/{req.assetId}.mp4",
-        waveformUrl=f"https://storage.example/waveform/{req.assetId}.json",
+    bucket = os.environ.get("STORAGE_BUCKET", "")
+    region = os.environ.get("STORAGE_REGION", "us-east-1")
+    access = os.environ.get("STORAGE_ACCESS_KEY", "")
+    secret = os.environ.get("STORAGE_SECRET_KEY", "")
+    endpoint = os.environ.get("STORAGE_ENDPOINT")
+
+    session = boto3.session.Session()
+    s3 = session.client(
+        "s3",
+        region_name=region,
+        aws_access_key_id=access,
+        aws_secret_access_key=secret,
+        endpoint_url=endpoint,
+        config=BotoConfig(s3={"addressing_style": "path"}),
     )
+
+    with tempfile.TemporaryDirectory() as td:
+        tmpdir = pathlib.Path(td)
+        src_path = tmpdir / "source.mp4"
+        proxy_path = tmpdir / "proxy.mp4"
+        # Download source
+        urllib.request.urlretrieve(req.sourceUrl, src_path)
+        # Transcode to 720p60 proxy
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(src_path),
+            "-vf",
+            "scale=-2:720,fps=60",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-b:v",
+            "6000k",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            str(proxy_path),
+        ]
+        subprocess.run(cmd, check=True)
+
+        key = f"proxy/{req.assetId}.mp4"
+        s3.upload_file(str(proxy_path), bucket, key, ExtraArgs={"ContentType": "video/mp4"})
+        proxy_url = s3.generate_presigned_url(
+            ClientMethod="get_object",
+            Params={"Bucket": bucket, "Key": key},
+            ExpiresIn=3600,
+        )
+    return IngestResponse(proxyUrl=proxy_url, waveformUrl=None)
 
 
 @web.post("/highlights", response_model=HighlightResponse)
@@ -158,8 +210,7 @@ async def highlights(req: HighlightRequest, authorization: Optional[str] = Heade
 @web.post("/render", response_model=RenderResponse)
 async def render(req: RenderRequest, authorization: Optional[str] = Header(None)):
     _require_auth(authorization)
-    # TODO: orchestrate ffmpeg pipeline, overlays/branding, and upload outputs to storage
-    # Placeholder: generate signed GET URLs for expected export keys
+    # Minimal ffmpeg render: scale/reframe to preset and upload; mix music if provided
     bucket = os.environ.get("STORAGE_BUCKET", "")
     region = os.environ.get("STORAGE_REGION", "us-east-1")
     access = os.environ.get("STORAGE_ACCESS_KEY", "")
@@ -179,20 +230,70 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
         )
 
     outputs: list[RenderOutput] = []
-    for p in req.presets:
-        key = f"exports/{req.assetId}-{p.presetId}.mp4"
-        if s3:
-            try:
-                url = s3.generate_presigned_url(
-                    ClientMethod="get_object",
-                    Params={"Bucket": bucket, "Key": key},
-                    ExpiresIn=3600,
-                )
-            except Exception:
-                url = f"https://example.com/{key}"
-        else:
-            url = f"https://example.com/{key}"
-        outputs.append(RenderOutput(presetId=p.presetId, url=url))
+    if not s3:
+        return RenderResponse(outputs=outputs)
+
+    # Resolve source: use proxy in proxy/{assetId}.mp4
+    src_key = f"proxy/{req.assetId}.mp4"
+    src_url = s3.generate_presigned_url(
+        ClientMethod="get_object",
+        Params={"Bucket": bucket, "Key": src_key},
+        ExpiresIn=3600,
+    )
+
+    with tempfile.TemporaryDirectory() as td:
+        tmpdir = pathlib.Path(td)
+        src_path = tmpdir / "src.mp4"
+        urllib.request.urlretrieve(src_url, src_path)
+
+        for p in req.presets:
+            out_path = tmpdir / f"out-{p.presetId}.mp4"
+            if p.presetId == "vertical-916":
+                vf = "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2"
+            elif p.presetId == "highlight-45":
+                vf = "scale=1080:1350:force_original_aspect_ratio=decrease,pad=1080:1350:(ow-iw)/2:(oh-ih)/2"
+            else:
+                vf = "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2"
+
+            cmd = [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(src_path),
+            ]
+            if req.trackUrl:
+                # Mix external audio track (simple concat mix)
+                music_path = tmpdir / "music.mp3"
+                try:
+                    urllib.request.urlretrieve(req.trackUrl, music_path)
+                    cmd += ["-i", str(music_path), "-filter_complex", f"[0:a]volume=0.8[a0];[1:a]volume=0.5[a1];[a0][a1]amix=inputs=2:duration=first:dropout_transition=2[a]", "-map", "0:v", "-map", "[a]"]
+                except Exception:
+                    # fallback to original audio only
+                    pass
+            cmd += [
+                "-vf",
+                vf,
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-b:v",
+                "6000k",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "320k",
+                "-movflags",
+                "+faststart",
+                str(out_path),
+            ]
+            subprocess.run(cmd, check=True)
+            key = f"exports/{req.assetId}-{p.presetId}.mp4"
+            s3.upload_file(str(out_path), bucket, key, ExtraArgs={"ContentType": "video/mp4"})
+            url = s3.generate_presigned_url("get_object", Params={"Bucket": bucket, "Key": key}, ExpiresIn=3600)
+            outputs.append(RenderOutput(presetId=p.presetId, url=url))
 
     return RenderResponse(outputs=outputs)
 

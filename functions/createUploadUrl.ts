@@ -15,14 +15,15 @@ function sanitizeFileName(name: string) {
 
 export const handler: Handler = async (evt) => {
   try {
-    const body = JSON.parse(evt.body || '{}') as { fileName?: string; size?: number; type?: string }
+    const body = JSON.parse(evt.body || '{}') as { fileName?: string; size?: number; type?: string; scope?: 'uploads' | 'logos' }
     if (!body.fileName || !body.size || !body.type) {
       return { statusCode: 400, body: JSON.stringify({ title: 'Invalid input', detail: 'fileName, size, type required' }) }
     }
 
     const fileName = sanitizeFileName(body.fileName)
     const assetId = `asset_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
-    const key = `uploads/${assetId}/${fileName}`
+    const base = body.scope === 'logos' ? 'logos' : 'uploads'
+    const key = `${base}/${assetId}/${fileName}`
 
     if (!STORAGE_BUCKET || !STORAGE_ACCESS_KEY || !STORAGE_SECRET_KEY) {
       console.log(JSON.stringify({ level: 'info', msg: 'createUploadUrl dev fallback', assetId }))

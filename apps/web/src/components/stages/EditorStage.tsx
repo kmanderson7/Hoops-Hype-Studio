@@ -1,4 +1,5 @@
 import type { BeatMarker, HighlightSegment, MusicTrack, StudioState, OverlayConfig } from '../../state/useStudioState'
+import { api } from '../../lib/apiClient'
 
 interface EditorStageProps {
   fileInfo?: StudioState['fileInfo']
@@ -170,6 +171,7 @@ export function EditorStage({ fileInfo, highlights, beatMarkers, selectedTrack, 
                 value={overlayConfig?.logo?.url || ''}
                 onChange={(v) => onOverlayChange?.({ ...overlayConfig!, logo: { ...(overlayConfig?.logo || { x: 0.92, y: 0.08, scale: 0.5 }), url: v } })}
               />
+              <LogoUploader onUploaded={(url) => onOverlayChange?.({ ...overlayConfig!, logo: { ...(overlayConfig?.logo || { x: 0.92, y: 0.08, scale: 0.5 }), url } })} />
             </div>
           </div>
         </div>
@@ -195,6 +197,45 @@ function LabeledInput({ label, value, onChange }: { label: string; value: string
         onChange={(e) => onChange(e.target.value)}
         className="rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 outline-none focus:border-indigo-400"
         placeholder={label}
+      />
+    </label>
+  )
+}
+
+function LogoUploader({ onUploaded }: { onUploaded: (url: string) => void }) {
+  async function handleFile(file?: File) {
+    if (!file) return
+    const isValid = (file.type === 'image/png' || file.type === 'image/svg+xml') && file.size <= 1 * 1024 * 1024
+    if (!isValid) {
+      alert('Logo must be PNG or SVG and ≤ 1MB')
+      return
+    }
+    try {
+      const { uploadUrl, key } = await api.createUploadUrl({ fileName: file.name, size: file.size, type: file.type, scope: 'logos' })
+      await new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest()
+        xhr.open('PUT', uploadUrl, true)
+        xhr.onload = () => (xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error(String(xhr.status))))
+        xhr.onerror = () => reject(new Error('Upload error'))
+        xhr.setRequestHeader('content-type', file.type)
+        xhr.send(file)
+      })
+      // If your bucket is public, construct a public URL from key; otherwise keep the key
+      const publicBase = (import.meta as any).env?.VITE_PUBLIC_BUCKET_BASE as string | undefined
+      const url = publicBase && key ? `${publicBase}/${key}` : key || ''
+      onUploaded(url)
+    } catch (e) {
+      alert(`Logo upload failed: ${e}`)
+    }
+  }
+  return (
+    <label className="flex flex-col gap-1">
+      <span className="text-xs uppercase tracking-[0.16em] text-slate-500">Upload Logo</span>
+      <input
+        type="file"
+        accept="image/png,image/svg+xml"
+        onChange={(e) => handleFile(e.target.files?.[0])}
+        className="rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-slate-300"
       />
     </label>
   )
