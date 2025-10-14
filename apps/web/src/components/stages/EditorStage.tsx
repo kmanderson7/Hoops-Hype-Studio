@@ -1,4 +1,4 @@
-import type { BeatMarker, HighlightSegment, MusicTrack, StudioState } from '../../state/useStudioState'
+import type { BeatMarker, HighlightSegment, MusicTrack, StudioState, OverlayConfig } from '../../state/useStudioState'
 
 interface EditorStageProps {
   fileInfo?: StudioState['fileInfo']
@@ -6,6 +6,8 @@ interface EditorStageProps {
   beatMarkers: BeatMarker[]
   selectedTrack?: MusicTrack
   onLaunchExport: () => void
+  overlayConfig?: OverlayConfig
+  onOverlayChange?: (cfg: OverlayConfig) => void
 }
 
 const aspectOptions = [
@@ -14,7 +16,7 @@ const aspectOptions = [
   { id: 'highlight', label: '4:5 Highlight', description: 'Instagram main feed' },
 ]
 
-export function EditorStage({ fileInfo, highlights, beatMarkers, selectedTrack, onLaunchExport }: EditorStageProps) {
+export function EditorStage({ fileInfo, highlights, beatMarkers, selectedTrack, onLaunchExport, overlayConfig, onOverlayChange }: EditorStageProps) {
   return (
     <section className="space-y-6">
       <header className="flex flex-wrap items-start justify-between gap-4">
@@ -134,6 +136,42 @@ export function EditorStage({ fileInfo, highlights, beatMarkers, selectedTrack, 
               ))}
             </div>
           </div>
+
+          <div className="rounded-3xl border border-white/10 bg-slate-900/60 p-5 backdrop-blur">
+            <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Overlay & Branding</p>
+            <div className="mt-3 grid gap-3 text-sm md:grid-cols-2">
+              <LabeledInput
+                label="Player Name"
+                value={overlayConfig?.lowerThird?.name || ''}
+                onChange={(v) => onOverlayChange?.({ ...overlayConfig!, lowerThird: { ...overlayConfig?.lowerThird!, name: v } })}
+              />
+              <LabeledInput
+                label="Team"
+                value={overlayConfig?.lowerThird?.team || ''}
+                onChange={(v) => onOverlayChange?.({ ...overlayConfig!, lowerThird: { ...overlayConfig?.lowerThird!, team: v } })}
+              />
+              <LabeledInput
+                label="Number"
+                value={overlayConfig?.lowerThird?.number || ''}
+                onChange={(v) => onOverlayChange?.({ ...overlayConfig!, lowerThird: { ...overlayConfig?.lowerThird!, number: v } })}
+              />
+              <LabeledInput
+                label="Position"
+                value={overlayConfig?.lowerThird?.position || ''}
+                onChange={(v) => onOverlayChange?.({ ...overlayConfig!, lowerThird: { ...overlayConfig?.lowerThird!, position: v } })}
+              />
+              <LabeledInput
+                label="Primary Color"
+                value={overlayConfig?.lowerThird?.color || ''}
+                onChange={(v) => onOverlayChange?.({ ...overlayConfig!, lowerThird: { ...overlayConfig?.lowerThird!, color: v } })}
+              />
+              <LabeledInput
+                label="Logo URL"
+                value={overlayConfig?.logo?.url || ''}
+                onChange={(v) => onOverlayChange?.({ ...overlayConfig!, logo: { ...(overlayConfig?.logo || { x: 0.92, y: 0.08, scale: 0.5 }), url: v } })}
+              />
+            </div>
+          </div>
         </div>
       </div>
     </section>
@@ -145,5 +183,19 @@ function Tag({ label, value }: { label: string; value: string }) {
     <span className="rounded-full border border-white/10 bg-slate-950/70 px-3 py-0.5 text-[11px] uppercase tracking-[0.16em] text-slate-300">
       {label}: {value}
     </span>
+  )
+}
+
+function LabeledInput({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
+  return (
+    <label className="flex flex-col gap-1">
+      <span className="text-xs uppercase tracking-[0.16em] text-slate-500">{label}</span>
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 outline-none focus:border-indigo-400"
+        placeholder={label}
+      />
+    </label>
   )
 }

@@ -81,7 +81,7 @@ This document defines the internal serverless APIs and external integrations req
   - `assetId` string
   - `trackId` string
   - `presets` string[] — preset IDs; see Export presets below
-  - `metadata?` object — overlays/branding, titles, colors
+  - `metadata?` object — overlays/branding, titles, colors (see Overlay Metadata)
 - Response 200
   - `renderJobId` string
 
@@ -93,9 +93,9 @@ This document defines the internal serverless APIs and external integrations req
   - `status` "queued" | "running" | "done" | "error"
   - `progress` number (0..100)
   - `eta?` number (seconds)
-  - `payload?` object — when `done`:
+  - `payload?` object
     - analysis jobs: `{ segments: HighlightSegment[], beats?: BeatMarker[] }`
-    - render jobs: `{ downloads: { presetId: string, url: string, expiresAt: string }[] }`
+    - render jobs: `{ presets?: { presetId: string, progress: number }[], downloads?: { presetId: string, url: string, expiresAt: string }[] }`
 
 7) POST `/finalizeExport`
 - Purpose: Create fresh signed download URLs for completed renders.
@@ -131,6 +131,22 @@ MusicTrack (apps/web)
 Export Presets (apps/web)
 - Preset IDs expected by UI: `cinematic-169`, `vertical-916`, `highlight-45`
 
+## Overlay Metadata
+
+Pass in `metadata` to `/startRenderJob` using this shape (subset shown; extend as needed):
+
+```
+{
+  "titleCard": { "text": "Skyline High Hype", "font": "Inter Bold", "color": "#FFFFFF", "duration": 2.0 },
+  "lowerThird": { "name": "Jordan Ellis", "team": "Skyline High", "number": "23", "position": "G", "color": "#5B6DFA" },
+  "scoreboard": { "enabled": true, "style": "burst", "color": "#FFD166" },
+  "logo": { "url": "https://.../logo.png", "x": 0.92, "y": 0.08, "scale": 0.5 },
+  "safeZones": { "16x9": "polygon(...)", "9x16": "polygon(...)" }
+}
+```
+
+The worker should validate fonts against an allowlist, constrain positions to [0..1], and clamp scales.
+
 ## External Services
 
 GPU Worker (Python)
@@ -141,6 +157,7 @@ GPU Worker (Python)
 
 Music Library
 - Pixabay/Artlist/Epidemic search by BPM, mood, energy → Normalize to MusicTrack shape.
+ - Required fields: `title`, `artist`, `bpm`, `mood`, `energy`, `key`, `license`, `previewUrl`, `duration`.
 
 Object Storage
 - Generate presigned `uploadUrl` and temporary `download` URLs. Apply 24h expiry policy.
@@ -166,6 +183,15 @@ Object Storage
 }
 ```
 - Common statuses: 400 (validation), 401/403 (auth to worker), 404 (asset/job not found), 429 (rate limit), 500 (unexpected)
+
+Standard error codes (in `detail` or `extensions.code`):
+- `UPLOAD_MISSING`, `UPLOAD_TOO_LARGE`, `UNSUPPORTED_MEDIA_TYPE`
+- `MODEL_TIMEOUT`, `MODEL_ERROR`, `FFMPEG_FAIL`
+- `RATE_LIMITED`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`
+
+## Security Headers
+- Worker auth: `Authorization: Bearer <GPU_WORKER_TOKEN>`, plus a signed `x-nonce` and `x-timestamp` if using HMAC.
+- Client uploads: prefer `Content-MD5` on PUT; validate against ETag or stored checksum.
 
 ## Notes for Implementation
 - Keep functions under 10s; offload long work to GPU worker and persist state in Redis/KV.

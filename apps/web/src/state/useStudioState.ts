@@ -61,6 +61,13 @@ export interface ExportDownload {
   expiresAt: string
 }
 
+export interface OverlayConfig {
+  titleCard?: { text: string; font: string; color: string; duration: number }
+  lowerThird?: { name: string; team: string; number: string; position: string; color: string }
+  scoreboard?: { enabled: boolean; style: 'burst' | 'minimal'; color: string }
+  logo?: { url: string; x: number; y: number; scale: number }
+}
+
 interface StageMeta {
   key: StageKey
   label: string
@@ -96,6 +103,7 @@ export interface StudioState {
   selectedTrackId?: string
   exportPresets: ExportPreset[]
   exportDownloads: ExportDownload[]
+  overlayConfig: OverlayConfig
   renderStatus?: string
   insights: {
     accuracy: number
@@ -117,6 +125,7 @@ export interface StudioState {
   markPresetProgress: (presetId: string, progress: number) => void
   setRenderStatus: (message?: string) => void
   setExportDownloads: (items: ExportDownload[]) => void
+  setOverlayConfig: (config: OverlayConfig) => void
   setInsights: (metrics: StudioState['insights']) => void
   reset: () => void
 }
@@ -205,6 +214,12 @@ export const useStudioState = create<StudioState>((set) => ({
   musicTracks: [],
   exportPresets: defaultPresets,
   exportDownloads: [],
+  overlayConfig: {
+    titleCard: { text: 'Hype Highlights', font: 'Inter Bold', color: '#FFFFFF', duration: 2 },
+    lowerThird: { name: 'Player Name', team: 'Team', number: '00', position: 'G', color: '#5B6DFA' },
+    scoreboard: { enabled: true, style: 'burst', color: '#FFD166' },
+    logo: { url: '', x: 0.92, y: 0.08, scale: 0.5 },
+  },
   insights: {
     accuracy: 0,
     beatAlignment: 0,
@@ -291,6 +306,7 @@ export const useStudioState = create<StudioState>((set) => ({
     })),
   setRenderStatus: (renderStatus) => set({ renderStatus }),
   setExportDownloads: (items) => set({ exportDownloads: items }),
+  setOverlayConfig: (config) => set({ overlayConfig: config }),
   setInsights: (metrics) => set({ insights: metrics }),
   reset: () =>
     set({
@@ -307,6 +323,12 @@ export const useStudioState = create<StudioState>((set) => ({
       selectedTrackId: undefined,
       exportPresets: defaultPresets,
       exportDownloads: [],
+      overlayConfig: {
+        titleCard: { text: 'Hype Highlights', font: 'Inter Bold', color: '#FFFFFF', duration: 2 },
+        lowerThird: { name: 'Player Name', team: 'Team', number: '00', position: 'G', color: '#5B6DFA' },
+        scoreboard: { enabled: true, style: 'burst', color: '#FFD166' },
+        logo: { url: '', x: 0.92, y: 0.08, scale: 0.5 },
+      },
       renderStatus: undefined,
       insights: {
         accuracy: 0,

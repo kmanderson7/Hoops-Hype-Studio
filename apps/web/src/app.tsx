@@ -41,6 +41,8 @@ export default function App() {
     togglePreset,
     setRenderStatus,
     setExportDownloads,
+    overlayConfig,
+    setOverlayConfig,
     setInsights,
     uploadRunId,
     reset,
@@ -73,6 +75,8 @@ export default function App() {
     togglePreset: state.togglePreset,
     setRenderStatus: state.setRenderStatus,
     setExportDownloads: state.setExportDownloads,
+    overlayConfig: state.overlayConfig,
+    setOverlayConfig: state.setOverlayConfig,
     setInsights: state.setInsights,
     uploadRunId: state.uploadRunId,
     reset: state.reset,
@@ -312,7 +316,10 @@ export default function App() {
           assetId: undefined,
           trackId: selectedTrack?.id,
           presets: enabled.map((p) => ({ presetId: p.id })),
-          metadata: {},
+          metadata: {
+            overlay: overlayConfig,
+            trackUrl: selectedTrack?.previewUrl,
+          },
         }
         const { jobId } = await api.startRenderJob(payload)
         setRenderStatus(`Render job queued: ${jobId}`)

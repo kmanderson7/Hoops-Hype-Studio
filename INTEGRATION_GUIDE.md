@@ -322,3 +322,21 @@ Two supported paths for resilient uploads:
 
 - Set `MUSIC_API_KEY` and `MUSIC_API_BASE_URL` (e.g., `https://pixabay.com/api`) and update `functions/recommendMusic.ts`
 - The function normalizes provider responses to `MusicTrack` shape (title, bpm, mood, key, license, previewUrl)
+
+---
+
+## 13. Security & Ops
+
+- Worker Authentication
+  - Use `Authorization: Bearer ${GPU_WORKER_TOKEN}` for all Function → Modal calls.
+  - Optional HMAC: include `x-timestamp` and `x-nonce`, and sign body+timestamp+nonce. Reject clock skew > 5 minutes and replayed nonce.
+- Rate Limiting
+  - Apply per-IP limits to public Functions (e.g., 60 req/min), and per-user concurrency (e.g., 1 render).
+  - Return 429 with `retry_after` seconds; log structured event.
+- Data Retention
+  - Auto-expire uploaded sources and exports in ≤ 24h. Implement delete endpoint for user-initiated removal; complete within 7 days.
+- Logging & Observability
+  - Emit structured JSON logs: `{ ts, level, assetId, jobId, userId, event, details }`.
+  - Track metrics: p95 time-to-export, failure rate, queue depth, GPU utilization.
+- SLOs & Alerts
+  - 99.5% availability; p95 render < 10 min. Alert when SLO burn > 80%.
