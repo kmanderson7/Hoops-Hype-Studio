@@ -28,5 +28,11 @@ export const api = {
   detectBeats: (payload: { assetId?: string; trackId?: string }) => postJson<DetectBeatsFn>('detectBeats', payload),
   recommendMusic: (payload: { assetId?: string; playStyle?: string; targetLength?: number }) =>
     postJson<RecommendMusicFn>('recommendMusic', payload),
+  startRenderJob: (payload: { assetId?: string; trackId?: string; presets?: { presetId: string }[]; metadata?: any }) =>
+    postJson<{ jobId: string }>('startRenderJob', payload),
+  getJobStatus: (payload?: { jobId?: string }) =>
+    postJson<{ status: 'queued' | 'running' | 'done' | 'error'; progress?: number; eta?: number; fileUrl?: string }>(
+      'getJobStatus',
+      payload,
+    ),
 }
-

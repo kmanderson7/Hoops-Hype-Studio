@@ -230,41 +230,61 @@ export default function App() {
     }
 
     setIsRendering(true)
-    setRenderStatus('Initializing serverless render workers...')
+    setRenderStatus('Submitting render job...')
     setStageStatus('export', 'active')
 
-    const timers: number[] = []
-    enabled.forEach((preset, index) => {
-      markPresetProgress(preset.id, 5)
-      timers.push(
-        window.setTimeout(() => {
-          markPresetProgress(preset.id, 35)
-          setRenderStatus(`Rendering ${preset.label} / Stage 1/3 (ffmpeg warmup)`)
-        }, 600 + index * 180),
-      )
-      timers.push(
-        window.setTimeout(() => {
-          markPresetProgress(preset.id, 65)
-          setRenderStatus(`Rendering ${preset.label} / Stage 2/3 (motion-aware color grade)`)
-        }, 1500 + index * 220),
-      )
-      timers.push(
-        window.setTimeout(() => {
-          markPresetProgress(preset.id, 100)
-          setRenderStatus(`Rendering ${preset.label} / Complete! Signed URL generated.`)
-        }, 2600 + index * 260),
-      )
-    })
+    enabled.forEach((p) => markPresetProgress(p.id, 5))
 
-    timers.push(
-      window.setTimeout(() => {
-        setRenderStatus('All exports complete. Share-ready files staged for 24h download window.')
-        setStageStatus('export', 'complete')
+    ;(async () => {
+      try {
+        const payload = {
+          // Wire real values when available
+          assetId: undefined,
+          trackId: selectedTrack?.id,
+          presets: enabled.map((p) => ({ presetId: p.id })),
+          metadata: {},
+        }
+        const { jobId } = await api.startRenderJob(payload)
+        setRenderStatus(`Render job queued: ${jobId}`)
+
+        // Poll job status
+        let progress = 10
+        const poll = window.setInterval(async () => {
+          try {
+            const status = await api.getJobStatus({ jobId })
+            if (status.progress != null) progress = Math.max(progress, status.progress)
+            // Distribute progress across enabled presets
+            enabled.forEach((p) => markPresetProgress(p.id, Math.min(99, progress)))
+
+            if (status.status === 'done') {
+              enabled.forEach((p) => markPresetProgress(p.id, 100))
+              if (status.fileUrl) {
+                setRenderStatus(`Complete. Download: ${status.fileUrl}`)
+              } else {
+                setRenderStatus('All exports complete. Signed URLs ready.')
+              }
+              setStageStatus('export', 'complete')
+              setIsRendering(false)
+              window.clearInterval(poll)
+            } else if (status.status === 'error') {
+              setRenderStatus('Render failed. Please retry.')
+              setIsRendering(false)
+              window.clearInterval(poll)
+            } else {
+              progress = Math.min(98, progress + 8)
+              setRenderStatus(`Rendering... ${progress}%`)
+            }
+          } catch (e) {
+            setRenderStatus(`Render polling error: ${e}`)
+            setIsRendering(false)
+          }
+        }, 800)
+        renderTimers.current.push(poll)
+      } catch (e) {
+        setRenderStatus(`Failed to start render: ${e}`)
         setIsRendering(false)
-      }, 3400 + enabled.length * 260),
-    )
-
-    renderTimers.current = timers
+      }
+    })()
   }
 
   useEffect(
