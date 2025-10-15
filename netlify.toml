@@ -2,9 +2,14 @@
   command = "pnpm -C apps/web build"
   publish = "apps/web/dist"
 
+[build.environment]
+# Allow install to update lockfile if package.json changed
+  NETLIFY_PNPM_FLAGS = "--no-frozen-lockfile"
+
 [functions]
   node_bundler = "esbuild"
   included_files = ["packages/**/*", "functions/**/*"]
+  directory = "functions"
 
 [[edge_functions]]
   path = "/.netlify/functions/*"
