@@ -33,11 +33,13 @@ export const api = {
   startRenderJob: (payload: { assetId?: string; trackId?: string; presets?: { presetId: string }[]; metadata?: any }) =>
     postJson<{ jobId: string }>('startRenderJob', payload),
   getJobStatus: (payload?: { jobId?: string }) =>
-    postJson<{ status: 'queued' | 'running' | 'done' | 'error'; progress?: number; eta?: number; fileUrl?: string }>(
+    postJson<{ status: 'queued' | 'running' | 'done' | 'error'; progress?: number; eta?: number; fileUrl?: string; presets?: { presetId: string; progress: number }[] }>(
       'getJobStatus',
       payload,
     ),
   finalizeExport: (payload: { renderJobId: string }) =>
     postJson<{ downloads: { presetId: string; url: string; expiresAt: string }[] }>('finalizeExport', payload),
   ingestAsset: (payload: { assetId: string; key: string }) => postJson<{ proxyUrl?: string; waveformUrl?: string }>('ingestAsset', payload),
+  deleteAsset: (payload: { assetId: string }) => postJson<{ deleted: { key: string; ok: boolean; status: number }[] }>('deleteAsset', payload),
+  deleteExport: (payload: { assetId: string; presetId: string }) => postJson<{ deleted: boolean; key: string; status: number }>('deleteExport', payload),
 }

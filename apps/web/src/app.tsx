@@ -13,6 +13,8 @@ export default function App() {
   const [isRendering, setIsRendering] = useState(false)
   const renderTimers = useRef<number[]>([])
   const {
+    assetId,
+    proxyUrl,
     currentStage,
     stageStatus,
     fileInfo,
@@ -44,9 +46,12 @@ export default function App() {
     overlayConfig,
     setOverlayConfig,
     setInsights,
+    setAssetInfo,
     uploadRunId,
     reset,
   } = useStudioState((state) => ({
+    assetId: state.assetId,
+    proxyUrl: state.proxyUrl,
     currentStage: state.currentStage,
     stageStatus: state.stageStatus,
     fileInfo: state.fileInfo,
@@ -78,6 +83,7 @@ export default function App() {
     overlayConfig: state.overlayConfig,
     setOverlayConfig: state.setOverlayConfig,
     setInsights: state.setInsights,
+    setAssetInfo: state.setAssetInfo,
     uploadRunId: state.uploadRunId,
     reset: state.reset,
   }))
@@ -99,18 +105,19 @@ export default function App() {
       try {
         // Step 1: Highlights
         updateTask('highlight-detection', { status: 'running', progress: 10 })
-        const hi = await api.detectHighlights({ videoUrl: fileInfo?.previewUrl })
-        const mapped = hi.segments.map((s, i) => {
+        const hi = await api.detectHighlights({ videoUrl: proxyUrl || fileInfo?.previewUrl })
+        const mapped = (hi as any).segments?.map((s: any, i: number) => {
+          if (s?.timestamp && s?.action) return s
           const action = s.label === 'dunk' ? 'Dunk' : s.label === 'three' ? 'Three Pointer' : 'Assist'
-          const clipDuration = Math.max(0, s.end - s.start)
-          const mm = Math.floor(s.start / 60)
-          const ss = Math.round(s.start % 60)
+          const clipDuration = Math.max(0, (s.end ?? 0) - (s.start ?? 0))
+          const mm = Math.floor((s.start ?? 0) / 60)
+          const ss = Math.round((s.start ?? 0) % 60)
           const timestamp = `${mm > 0 ? `${mm}m ` : ''}${String(ss).padStart(2, '0')}`
           return {
             id: s.id || `seg-${i + 1}`,
             timestamp,
             action: action as any,
-            descriptor: `${action} — auto-detected`,
+            descriptor: `${action} - auto-detected`,
             confidence: s.confidence ?? 0.9,
             audioPeak: 0.6,
             motion: 0.7,
@@ -118,12 +125,12 @@ export default function App() {
             clipDuration,
           }
         })
-        setHighlights(mapped)
+        setHighlights(mapped || [])
         updateTask('highlight-detection', { status: 'done', progress: 100 })
 
         // Step 2: Beats
         updateTask('beat-sync', { status: 'running', progress: 20 })
-        const beats = await api.detectBeats({})
+        const beats = await api.detectBeats({ assetId, trackId: selectedTrackId, trackUrl: selectedTrack?.previewUrl, previewUrl: selectedTrack?.previewUrl })
         const markers = beats.beatGrid.map((t, idx) => ({ id: `beat-${idx}`, time: t, intensity: idx % 4 === 0 ? 0.92 : 0.6 }))
         setBeatMarkers(markers)
         // derive a lightweight energy curve from beats
@@ -239,7 +246,7 @@ export default function App() {
         }
       }
 
-      const { uploadUrl, assetId, key } = await api.createUploadUrl({ fileName: file.name, size: file.size, type: file.type })
+      const { uploadUrl, assetId: newAssetId, key } = await api.createUploadUrl({ fileName: file.name, size: file.size, type: file.type })
 
       // Upload via XHR to track progress (fetch lacks upload progress events)
       await new Promise<void>((resolve, reject) => {
@@ -265,12 +272,12 @@ export default function App() {
       })
 
       // Trigger ingest to analysis pipeline (UI effect will handle API calls)
-      if (assetId && key) {
+      if (newAssetId && key) {
         try {
-          const ingest = await api.ingestAsset({ assetId, key })
-          if (ingest?.proxyUrl) {
-            setRenderStatus('Proxy generated; proceeding to analysis...')
-          }
+          const ingest = await api.ingestAsset({ assetId: newAssetId, key })
+          if (ingest?.proxyUrl) setRenderStatus('Proxy generated; proceeding to analysis...')
+          // Record asset/proxy for downstream calls
+          setAssetInfo({ assetId: newAssetId, proxyUrl: ingest?.proxyUrl })
         } catch (e) {
           setRenderStatus(`Ingest error: ${e}`)
         }
@@ -321,14 +328,47 @@ export default function App() {
 
     ;(async () => {
       try {
+        // Build beat-aligned cut list (±0.3s)
+        const toSeconds = (ts: string): number => {
+          const mIdx = ts.indexOf('m')
+          if (mIdx > -1) {
+            const m = parseInt(ts.slice(0, mIdx).trim() || '0', 10)
+            const s = parseInt(ts.slice(mIdx + 1).trim() || '0', 10)
+            return Math.max(0, m * 60 + s)
+          }
+          const n = parseInt(ts.replace(/[^0-9]/g, '') || '0', 10)
+          return Math.max(0, n)
+        }
+        const grid = beatMarkers.map((b) => b.time).sort((a, b) => a - b)
+        const snap = (t: number): number => {
+          if (grid.length === 0) return t
+          let best = grid[0]
+          let diff = Math.abs(best - t)
+          for (let i = 1; i < grid.length; i++) {
+            const d = Math.abs(grid[i] - t)
+            if (d < diff) {
+              diff = d
+              best = grid[i]
+            }
+          }
+          return diff <= 0.3 ? best : t
+        }
+        const segments = highlights.slice(0, 12).map((h) => {
+          const s0 = toSeconds(h.timestamp)
+          const start = snap(s0)
+          const end = Math.max(start + 0.8, start + (h.clipDuration || 2))
+          const impact = Math.min(end, start + Math.min(0.3, (h.clipDuration || 2) / 2))
+          return { start, end, impact }
+        })
+
         const payload = {
-          // Wire real values when available
-          assetId: undefined,
+          assetId,
           trackId: selectedTrack?.id,
           presets: enabled.map((p) => ({ presetId: p.id })),
           metadata: {
             overlay: overlayConfig,
             trackUrl: selectedTrack?.previewUrl,
+            segments,
           },
         }
         const { jobId } = await api.startRenderJob(payload)
@@ -340,8 +380,12 @@ export default function App() {
           try {
             const status = await api.getJobStatus({ jobId })
             if (status.progress != null) progress = Math.max(progress, status.progress)
-            // Distribute progress across enabled presets
-            enabled.forEach((p) => markPresetProgress(p.id, Math.min(99, progress)))
+            const presetProgress = (status as any).presets as { presetId: string; progress: number }[] | undefined
+            if (presetProgress && Array.isArray(presetProgress)) {
+              presetProgress.forEach((pp) => markPresetProgress(pp.presetId, Math.min(99, pp.progress)))
+            } else {
+              enabled.forEach((p) => markPresetProgress(p.id, Math.min(99, progress)))
+            }
 
             if (status.status === 'done') {
               enabled.forEach((p) => markPresetProgress(p.id, 100))
@@ -377,6 +421,39 @@ export default function App() {
         setIsRendering(false)
       }
     })()
+  }
+
+  const handleDeleteExport = async (presetId: string) => {
+    try {
+      if (!assetId) {
+        setRenderStatus('Cannot delete export: missing assetId')
+        return
+      }
+      const res = await api.deleteExport({ assetId, presetId })
+      if ((res as any).deleted) {
+        setExportDownloads(exportDownloads.filter((d) => d.presetId !== presetId))
+        markPresetProgress(presetId, 0)
+        setRenderStatus(`Deleted export for ${presetId}.`)
+      } else {
+        setRenderStatus(`Failed to delete export ${presetId}.`)
+      }
+    } catch (e) {
+      setRenderStatus(`Delete export error: ${e}`)
+    }
+  }
+
+  const handleDeleteAsset = async () => {
+    try {
+      if (!assetId) {
+        reset()
+        return
+      }
+      await api.deleteAsset({ assetId })
+      reset()
+      setRenderStatus('Asset deleted and session cleared.')
+    } catch (e) {
+      setRenderStatus(`Delete asset error: ${e}`)
+    }
   }
 
   useEffect(
@@ -437,6 +514,8 @@ export default function App() {
             renderStatus={renderStatus}
             isRendering={isRendering}
             downloads={exportDownloads}
+            onDeleteExport={handleDeleteExport}
+            onDeleteAsset={handleDeleteAsset}
           />
         )
       default:

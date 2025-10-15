@@ -1,9 +1,12 @@
 import type { Handler } from '@netlify/functions'
+import { requireHmacNonce } from './_auth'
 
 const { MUSIC_API_KEY = '', MUSIC_API_BASE_URL = '' } = process.env
 
 export const handler: Handler = async (evt) => {
   try {
+    const guard = await requireHmacNonce({ headers: evt.headers as any, bodyText: evt.body || '' })
+    if (guard) return guard
     const body = evt.body ? JSON.parse(evt.body) : {}
     const q = body?.query || 'trap sport hype'
     const url = MUSIC_API_BASE_URL && MUSIC_API_KEY

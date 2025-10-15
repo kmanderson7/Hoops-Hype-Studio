@@ -82,6 +82,8 @@ export const stageOrder: StageMeta[] = [
 ]
 
 export interface StudioState {
+  assetId?: string
+  proxyUrl?: string
   currentStage: StageKey
   stageStatus: Record<StageKey, StageStatus>
   uploadRunId: number
@@ -112,6 +114,7 @@ export interface StudioState {
     notes: string[]
   }
   ingestUpload: (payload: { file: File; previewUrl: string }) => void
+  setAssetInfo: (info: { assetId?: string; proxyUrl?: string }) => void
   updateTask: (taskId: string, partial: Partial<TaskLog>) => void
   setProcessingProgress: (value: number) => void
   setStageStatus: (stage: StageKey, status: StageStatus) => void
@@ -203,6 +206,8 @@ const defaultPresets: ExportPreset[] = [
 ]
 
 export const useStudioState = create<StudioState>((set) => ({
+  assetId: undefined,
+  proxyUrl: undefined,
   currentStage: 'upload',
   stageStatus: { ...initialStageStatus, upload: 'active' },
   uploadRunId: 0,
@@ -248,6 +253,9 @@ export const useStudioState = create<StudioState>((set) => ({
           fps: 60,
           previewUrl,
         },
+        // Clear prior asset/proxy until ingest returns
+        assetId: undefined,
+        proxyUrl: undefined,
         processingProgress: 0,
         tasks: baseTasks.map((task) => ({ ...task, status: 'queued', progress: 0 })),
         currentStage: 'analysis',
@@ -273,6 +281,7 @@ export const useStudioState = create<StudioState>((set) => ({
         },
       }
     }),
+  setAssetInfo: (info) => set((state) => ({ assetId: info.assetId ?? state.assetId, proxyUrl: info.proxyUrl ?? state.proxyUrl })),
   updateTask: (taskId, partial) =>
     set((state) => ({
       tasks: state.tasks.map((task) =>
@@ -310,6 +319,8 @@ export const useStudioState = create<StudioState>((set) => ({
   setInsights: (metrics) => set({ insights: metrics }),
   reset: () =>
     set({
+      assetId: undefined,
+      proxyUrl: undefined,
       currentStage: 'upload',
       stageStatus: { ...initialStageStatus, upload: 'active' },
       uploadRunId: 0,

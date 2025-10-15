@@ -1,18 +1,44 @@
 export default async (request: Request) => {
   const url = new URL(request.url)
-  // Basic rate limiting: 60 req/min per IP (in-memory, best-effort)
+  // Token-bucket rate limiting (prefers Upstash Redis; falls back to memory)
   const ip = request.headers.get('x-forwarded-for') || 'unknown'
-  const now = Date.now()
-  const windowMs = 60_000
-  const key = `${ip}:${Math.floor(now / windowMs)}`
-  // @ts-ignore - globalThis memory bucket (ephemeral per region/instance)
-  const bucket: Map<string, number> = (globalThis as any).__rl || ((globalThis as any).__rl = new Map())
-  const count = (bucket.get(key) || 0) + 1
-  bucket.set(key, count)
-  if (count > 60) {
+  const base = (globalThis as any).UPSTASH_REDIS_REST_URL || (Deno.env.get('UPSTASH_REDIS_REST_URL') || '')
+  const token = (globalThis as any).UPSTASH_REDIS_REST_TOKEN || (Deno.env.get('UPSTASH_REDIS_REST_TOKEN') || '')
+  const limit = Number(Deno.env.get('RATE_LIMIT_TOKENS') || '120') // tokens per window
+  const windowSec = Number(Deno.env.get('RATE_LIMIT_WINDOW_SEC') || '60')
+
+  async function redisIncr(key: string, ttlSec: number): Promise<number | null> {
+    if (!base || !token) return null
+    const url = `${base}/pipeline/${encodeURIComponent('INCR')}/${encodeURIComponent(key)}/${encodeURIComponent('EXPIRE')}/${encodeURIComponent(key)}/${ttlSec}`
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+    if (!res.ok) return null
+    const data = await res.json().catch(() => null) as any
+    const result = Array.isArray(data?.result) ? data.result[0]?.result : undefined
+    return typeof result === 'number' ? result : null
+  }
+
+  const windowKey = `rl:${ip}:${Math.floor(Date.now() / (windowSec * 1000))}`
+  let count: number | null = await redisIncr(windowKey, windowSec)
+  if (count == null) {
+    // In-memory fallback per edge isolate
+    // @ts-ignore
+    const mem: Map<string, { n: number; t: number }> = (globalThis as any).__rl || ((globalThis as any).__rl = new Map())
+    const now = Date.now()
+    const win = windowSec * 1000
+    const rec = mem.get(windowKey)
+    if (!rec || now - rec.t > win) {
+      mem.set(windowKey, { n: 1, t: now })
+      count = 1
+    } else {
+      rec.n += 1
+      count = rec.n
+      mem.set(windowKey, rec)
+    }
+  }
+  if ((count || 0) > limit) {
     return new Response(JSON.stringify({ title: 'Too Many Requests', detail: 'RATE_LIMITED' }), {
       status: 429,
-      headers: { 'content-type': 'application/json', 'retry-after': '30' },
+      headers: { 'content-type': 'application/json', 'retry-after': String(Math.ceil(windowSec / 4)) },
     })
   }
 
@@ -43,4 +69,3 @@ export default async (request: Request) => {
 export const config = {
   path: ["/.netlify/functions/*"],
 }
-

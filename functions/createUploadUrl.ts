@@ -1,5 +1,6 @@
 import type { Handler } from '@netlify/functions'
 import { presignS3Url } from './_s3Presign'
+import { requireHmacNonce } from './_auth'
 
 const {
   STORAGE_BUCKET = '',
@@ -15,6 +16,8 @@ function sanitizeFileName(name: string) {
 
 export const handler: Handler = async (evt) => {
   try {
+    const guard = await requireHmacNonce({ headers: evt.headers as any, bodyText: evt.body || '' })
+    if (guard) return guard
     const body = JSON.parse(evt.body || '{}') as { fileName?: string; size?: number; type?: string; scope?: 'uploads' | 'logos' }
     if (!body.fileName || !body.size || !body.type) {
       return { statusCode: 400, body: JSON.stringify({ title: 'Invalid input', detail: 'fileName, size, type required' }) }

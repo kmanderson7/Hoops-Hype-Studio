@@ -14,3 +14,7 @@
   from = "/api/*"
   to = "/.netlify/functions/:splat"
   status = 200
+
+[[scheduled.functions]]
+  name = "retentionSweep"
+  cron = "0 6 * * *" # daily at 06:00 UTC

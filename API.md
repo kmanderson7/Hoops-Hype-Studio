@@ -92,6 +92,7 @@ This document defines the internal serverless APIs and external integrations req
 - Response 200
   - `status` "queued" | "running" | "done" | "error"
   - `progress` number (0..100)
+  - `presets` { presetId: string, progress: number }[]
   - `eta?` number (seconds)
   - `payload?` object
     - analysis jobs: `{ segments: HighlightSegment[], beats?: BeatMarker[] }`
@@ -199,3 +200,12 @@ Standard error codes (in `detail` or `extensions.code`):
 - Validate MIME, size (< 5 GB), and sanitize file names in `/createUploadUrl`.
 - Normalize external music responses to `MusicTrack` to match the UI.
 
+Additional endpoints
+
+- POST /beats → `{ trackUrl }` ⇒ `{ bpm: number, beatGrid: number[] }`
+- POST /deleteAsset → `{ assetId }` ⇒ `{ deleted: { key, ok, status }[] }`
+- POST /deleteExport → `{ assetId, presetId }` ⇒ `{ deleted: boolean }`
+
+Scheduled
+
+- retentionSweep (cron) → daily best-effort retention; prefer S3/R2 lifecycle policies.

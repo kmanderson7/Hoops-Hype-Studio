@@ -1,10 +1,15 @@
 import type { Handler } from '@netlify/functions'
 import { createRenderJob, setRenderJobDownloads } from './_jobStore'
+import { requireHmacNonce, checkRenderConcurrency, setRenderLock } from './_auth'
+import { log, captureException } from './_obs'
 
 const { GPU_WORKER_BASE_URL = '', GPU_WORKER_TOKEN = '' } = process.env
 
 export const handler: Handler = async (evt) => {
   try {
+    const guard = await requireHmacNonce({ headers: evt.headers as any, bodyText: evt.body || '' })
+    if (guard) return guard
+
     const body = JSON.parse(evt.body || '{}') as {
       assetId?: string
       trackId?: string
@@ -15,8 +20,14 @@ export const handler: Handler = async (evt) => {
     if (!presetIds.length) {
       return { statusCode: 400, body: JSON.stringify({ title: 'Invalid input', detail: 'presets[] required' }) }
     }
+    const ip = (evt.headers['x-forwarded-for'] as string) || ''
+    const cc = await checkRenderConcurrency(ip)
+    if (cc.blocked) {
+      return { statusCode: 429, body: JSON.stringify({ title: 'Too Many Requests', detail: 'RENDER_CONCURRENCY_LIMIT' }) }
+    }
     const job = await (createRenderJob as any)({ assetId: body.assetId, trackId: body.trackId, presets: presetIds })
-    console.log(JSON.stringify({ level: 'info', msg: 'render_job_created', jobId: job.id, presets: presetIds }))
+    if (ip) await setRenderLock(ip, job.id, 15 * 60)
+    await log({ level: 'info', msg: 'render_job_created', jobId: job.id, presets: presetIds })
 
     // If GPU worker is configured, kick off render immediately and capture outputs
     if (GPU_WORKER_BASE_URL && GPU_WORKER_TOKEN) {
@@ -37,14 +48,15 @@ export const handler: Handler = async (evt) => {
             await (setRenderJobDownloads as any)(job.id, data.outputs)
           }
         }
-      } catch {
+      } catch (e: any) {
         // ignore worker errors; job will still simulate progress
+        await captureException(e, { where: 'startRenderJob:worker_render' })
       }
     }
 
     return { statusCode: 200, body: JSON.stringify({ renderJobId: job.id, jobId: job.id }) }
   } catch (e: any) {
-    console.error(JSON.stringify({ level: 'error', msg: 'start_render_failed', err: e?.message }))
+    await captureException(e, { where: 'startRenderJob' })
     return { statusCode: 500, body: JSON.stringify({ title: 'Server error', detail: e?.message || String(e) }) }
   }
 }

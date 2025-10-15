@@ -1,7 +1,7 @@
 import crypto from 'crypto'
 
 export interface PresignParams {
-  method: 'PUT' | 'GET'
+  method: 'PUT' | 'GET' | 'DELETE' | 'HEAD'
   bucket: string
   key: string
   region: string
@@ -93,4 +93,3 @@ export function presignS3Url(params: PresignParams): string {
   const presignedUrl = `${url.origin}${canonicalUri}?${qs.toString()}`
   return presignedUrl
 }
-
