@@ -3,7 +3,10 @@
   publish = "apps/web/dist"
 
 [build.environment]
-# Install step above disables frozen lockfile; no special flags needed
+  # Disable frozen lockfile for pnpm's automatic install phase
+  PNPM_FLAGS = "--no-frozen-lockfile"
+  # Enable pnpm explicitly
+  NPM_FLAGS = "--version"
 
 [functions]
   node_bundler = "esbuild"
