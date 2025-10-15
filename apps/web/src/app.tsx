@@ -235,7 +235,7 @@ export default function App() {
           })
           uppy.on('complete', () => {
             updateTask('chunk-encoder', { status: 'done', progress: 100 })
-            uppy.close()
+            ;(uppy as any).close?.()
             ingestUpload({ file, previewUrl })
           })
           uppy.addFile({ data: file, name: file.name, type: file.type })
@@ -311,7 +311,7 @@ export default function App() {
   }
 
   const handleStartRender = () => {
-    renderTimers.current.forEach((id) => window.clearTimeout(id))
+    renderTimers.current.forEach((id: number) => window.clearTimeout(id))
     renderTimers.current = []
 
     const enabled = exportPresets.filter((preset) => preset.enabled)
@@ -339,7 +339,7 @@ export default function App() {
           const n = parseInt(ts.replace(/[^0-9]/g, '') || '0', 10)
           return Math.max(0, n)
         }
-        const grid = beatMarkers.map((b) => b.time).sort((a, b) => a - b)
+        const grid = beatMarkers.map((b) => b.time).sort((a: number, b: number) => a - b)
         const snap = (t: number): number => {
           if (grid.length === 0) return t
           let best = grid[0]
@@ -458,7 +458,7 @@ export default function App() {
 
   useEffect(
     () => () => {
-      renderTimers.current.forEach((id) => window.clearTimeout(id))
+      renderTimers.current.forEach((id: number) => window.clearTimeout(id))
     },
     [],
   )

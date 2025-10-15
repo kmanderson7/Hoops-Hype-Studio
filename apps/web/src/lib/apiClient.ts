@@ -27,7 +27,8 @@ export const api = {
   createUploadUrl: (payload: { fileName: string; size: number; type: string; scope?: 'uploads' | 'logos' }) =>
     postJson<{ assetId: string; uploadUrl: string; proxyUrl?: string; key?: string }>('createUploadUrl', payload),
   detectHighlights: (payload: { videoUrl?: string }) => postJson<DetectHighlightsFn>('detectHighlights', payload),
-  detectBeats: (payload: { assetId?: string; trackId?: string }) => postJson<DetectBeatsFn>('detectBeats', payload),
+  detectBeats: (payload: { assetId?: string; trackId?: string; trackUrl?: string; previewUrl?: string }) =>
+    postJson<DetectBeatsFn>('detectBeats', payload),
   recommendMusic: (payload: { assetId?: string; playStyle?: string; targetLength?: number }) =>
     postJson<RecommendMusicFn>('recommendMusic', payload),
   startRenderJob: (payload: { assetId?: string; trackId?: string; presets?: { presetId: string }[]; metadata?: any }) =>

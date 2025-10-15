@@ -1,0 +1,47 @@
+name: Deploy Modal GPU Worker
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'workers/modal/**'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Modal CLI
+        run: |
+          python -m pip install --upgrade pip
+          pip install modal-client
+      - name: Configure Modal auth
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          if [ -z "$MODAL_TOKEN_ID" ] || [ -z "$MODAL_TOKEN_SECRET" ]; then
+            echo "Missing MODAL_TOKEN_ID or MODAL_TOKEN_SECRET repo secrets" >&2
+            exit 1
+          fi
+          python - << 'PY'
+import os, subprocess, sys
+tid = os.environ['MODAL_TOKEN_ID']
+ts = os.environ['MODAL_TOKEN_SECRET']
+cmd = [sys.executable, '-m', 'modal.cli.entry_point', 'token', 'set', '--token-id', tid, '--token-secret', ts]
+subprocess.run(cmd, check=True)
+PY
+      - name: Deploy worker app
+        run: |
+          modal deploy workers/modal/modal_app.py
+
+# Notes:
+# - Before the first deploy, create the Modal secret `hoops-hype-studio` in the Modal UI/CLI
+#   and add keys: GPU_WORKER_TOKEN, STORAGE_BUCKET, STORAGE_REGION, STORAGE_ACCESS_KEY,
+#   STORAGE_SECRET_KEY, STORAGE_ENDPOINT (optional)
+# - Set GitHub repo secrets MODAL_TOKEN_ID and MODAL_TOKEN_SECRET from `modal token new`
