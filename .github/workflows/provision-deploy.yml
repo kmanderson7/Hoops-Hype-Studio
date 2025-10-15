@@ -1,0 +1,111 @@
+name: Provision Env, Deploy Worker, Trigger Netlify Build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  provision-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 1) Sync Netlify environment from GitHub secrets
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install Netlify CLI
+        run: npm i -g netlify-cli
+      - name: Push env to Netlify
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+          STORAGE_BUCKET: ${{ secrets.STORAGE_BUCKET }}
+          STORAGE_REGION: ${{ secrets.STORAGE_REGION }}
+          STORAGE_ACCESS_KEY: ${{ secrets.STORAGE_ACCESS_KEY }}
+          STORAGE_SECRET_KEY: ${{ secrets.STORAGE_SECRET_KEY }}
+          STORAGE_ENDPOINT: ${{ secrets.STORAGE_ENDPOINT }}
+          GPU_WORKER_BASE_URL: ${{ secrets.GPU_WORKER_BASE_URL }}
+          GPU_WORKER_TOKEN: ${{ secrets.GPU_WORKER_TOKEN }}
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+          LOGTAIL_TOKEN: ${{ secrets.LOGTAIL_TOKEN }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          EDGE_HMAC_SECRET: ${{ secrets.EDGE_HMAC_SECRET }}
+          RATE_LIMIT_TOKENS: ${{ secrets.RATE_LIMIT_TOKENS }}
+          RATE_LIMIT_WINDOW_SEC: ${{ secrets.RATE_LIMIT_WINDOW_SEC }}
+          RETENTION_DAYS: ${{ secrets.RETENTION_DAYS }}
+          WEB_ORIGIN: ${{ secrets.WEB_ORIGIN }}
+        run: |
+          if [ -z "$NETLIFY_AUTH_TOKEN" ] || [ -z "$NETLIFY_SITE_ID" ]; then
+            echo "Missing NETLIFY_AUTH_TOKEN or NETLIFY_SITE_ID repo secrets" >&2
+            exit 1
+          fi
+          set_env() {
+            key="$1"; val="$2"
+            if [ -n "$val" ]; then
+              echo "Setting $key"; netlify env:set "$key" "$val" --site "$NETLIFY_SITE_ID"
+            else
+              echo "Skipping $key (empty)"
+            fi
+          }
+          set_env STORAGE_BUCKET "$STORAGE_BUCKET"
+          set_env STORAGE_REGION "$STORAGE_REGION"
+          set_env STORAGE_ACCESS_KEY "$STORAGE_ACCESS_KEY"
+          set_env STORAGE_SECRET_KEY "$STORAGE_SECRET_KEY"
+          set_env STORAGE_ENDPOINT "$STORAGE_ENDPOINT"
+          set_env GPU_WORKER_BASE_URL "$GPU_WORKER_BASE_URL"
+          set_env GPU_WORKER_TOKEN "$GPU_WORKER_TOKEN"
+          set_env UPSTASH_REDIS_REST_URL "$UPSTASH_REDIS_REST_URL"
+          set_env UPSTASH_REDIS_REST_TOKEN "$UPSTASH_REDIS_REST_TOKEN"
+          set_env LOGTAIL_TOKEN "$LOGTAIL_TOKEN"
+          set_env SENTRY_DSN "$SENTRY_DSN"
+          set_env EDGE_HMAC_SECRET "$EDGE_HMAC_SECRET"
+          set_env RATE_LIMIT_TOKENS "$RATE_LIMIT_TOKENS"
+          set_env RATE_LIMIT_WINDOW_SEC "$RATE_LIMIT_WINDOW_SEC"
+          set_env RETENTION_DAYS "$RETENTION_DAYS"
+          set_env WEB_ORIGIN "$WEB_ORIGIN"
+
+      # 2) Deploy Modal GPU Worker
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Modal CLI
+        run: |
+          python -m pip install --upgrade pip
+          pip install modal-client
+      - name: Configure Modal auth
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          if [ -z "$MODAL_TOKEN_ID" ] || [ -z "$MODAL_TOKEN_SECRET" ]; then
+            echo "Missing MODAL_TOKEN_ID or MODAL_TOKEN_SECRET repo secrets" >&2
+            exit 1
+          fi
+          python - << 'PY'
+import os, subprocess, sys
+tid = os.environ['MODAL_TOKEN_ID']
+ts = os.environ['MODAL_TOKEN_SECRET']
+cmd = [sys.executable, '-m', 'modal.cli.entry_point', 'token', 'set', '--token-id', tid, '--token-secret', ts]
+subprocess.run(cmd, check=True)
+PY
+      - name: Deploy worker app
+        run: |
+          modal deploy workers/modal/modal_app.py
+
+      # 3) Trigger Netlify build
+      - name: Trigger Netlify build
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+        run: |
+          if [ -z "$NETLIFY_AUTH_TOKEN" ] || [ -z "$NETLIFY_SITE_ID" ]; then
+            echo "Missing NETLIFY_AUTH_TOKEN or NETLIFY_SITE_ID repo secrets" >&2
+            exit 1
+          fi
+          curl -sf -H "Authorization: Bearer ${NETLIFY_AUTH_TOKEN}" \
+               -H "Content-Type: application/json" \
+               -X POST https://api.netlify.com/api/v1/sites/${NETLIFY_SITE_ID}/builds
+
