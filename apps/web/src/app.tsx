@@ -163,9 +163,9 @@ export default function App() {
         setMusicTracks(tracks)
 
         // Insights (basic derived placeholder)
-        const avgConf = mapped.reduce((a, b) => a + (b.confidence || 0.8), 0) / Math.max(mapped.length, 1)
+        const avgConf = mapped.reduce((a: number, b: any) => a + (b.confidence || 0.8), 0) / Math.max(mapped.length, 1)
         const avgBeat = 0.8
-        const avgEnergy = markers.reduce((a, b) => a + b.intensity, 0) / Math.max(markers.length, 1)
+        const avgEnergy = markers.reduce((a: number, b: any) => a + b.intensity, 0) / Math.max(markers.length, 1)
         setInsights({
           accuracy: avgConf,
           beatAlignment: avgBeat,
