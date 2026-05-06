@@ -24,10 +24,25 @@ type DetectHighlightsFn = {
   proxyUrl?: string
 }
 
-type DetectBeatsFn = { bpm: number; beatGrid: number[] }
+type DetectBeatsFn = { bpm: number; beatGrid: number[]; downbeats?: number[] }
 
 type RecommendMusicFn = {
-  tracks: { url: string; title: string; bpm: number; mood: string; energy: number; license: string }[]
+  tracks: {
+    url: string
+    title: string
+    artist?: string
+    bpm: number
+    mood: string
+    energy: number
+    license: string
+    matchScore?: number
+    key?: string
+    waveform?: number[]
+  }[]
+  avgBpm?: number
+  avgEnergy?: number
+  energyCurve?: number[]
+  peakMoments?: number[]
 }
 
 export const api = {
@@ -36,7 +51,7 @@ export const api = {
   detectHighlights: (payload: { videoUrl?: string }) => postJson<DetectHighlightsFn>('detectHighlights', payload),
   detectBeats: (payload: { assetId?: string; trackId?: string; trackUrl?: string; previewUrl?: string }) =>
     postJson<DetectBeatsFn>('detectBeats', payload),
-  recommendMusic: (payload: { assetId?: string; playStyle?: string; targetLength?: number }) =>
+  recommendMusic: (payload: { assetId?: string; proxyUrl?: string; playStyle?: string; targetLength?: number; query?: string }) =>
     postJson<RecommendMusicFn>('recommendMusic', payload),
   startRenderJob: (payload: { assetId?: string; trackId?: string; presets?: { presetId: string }[]; metadata?: any }) =>
     postJson<{ jobId: string }>('startRenderJob', payload),

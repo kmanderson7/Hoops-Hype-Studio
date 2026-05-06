@@ -133,51 +133,60 @@ export default function App() {
         setHighlights(mapped || [])
         updateTask('highlight-detection', { status: 'done', progress: 100 })
 
-        // Step 2: Beats
+        // Step 2: Beats — emphasize downbeats (every 4th beat) when no explicit downbeat array is provided
         updateTask('beat-sync', { status: 'running', progress: 20 })
         const beats = await api.detectBeats({ assetId: assetIdRef.current, trackId: selectedTrackId, trackUrl: selectedTrack?.previewUrl, previewUrl: selectedTrack?.previewUrl })
-        const markers = beats.beatGrid.map((t, idx) => ({ id: `beat-${idx}`, time: t, intensity: idx % 4 === 0 ? 0.92 : 0.6 }))
+        const downbeatSet = new Set((beats.downbeats || []).map((t) => t.toFixed(3)))
+        const markers = beats.beatGrid.map((t, idx) => {
+          const isDownbeat = downbeatSet.size > 0 ? downbeatSet.has(t.toFixed(3)) : idx % 4 === 0
+          return { id: `beat-${idx}`, time: t, intensity: isDownbeat ? 0.95 : 0.55 }
+        })
         setBeatMarkers(markers)
-        // derive a lightweight energy curve from beats
-        const curve = Array.from({ length: Math.min(20, markers.length) }, (_, i) =>
-          0.5 + 0.5 * Math.sin(i / 3),
-        )
-        setEnergyCurve(curve)
         updateTask('beat-sync', { status: 'done', progress: 100 })
 
-        // Step 3: Music
+        // Step 3: Music — also pulls audio energy profile so we can render an honest momentum arc
         updateTask('music-intel', { status: 'running', progress: 25 })
-        const rec = await api.recommendMusic({})
+        const rec = await api.recommendMusic({ assetId: assetIdRef.current, proxyUrl: proxyUrlRef.current })
         const tracks = rec.tracks.map((t, i) => ({
           id: `track-${i + 1}`,
           title: t.title,
-          artist: 'Unknown',
+          artist: t.artist || 'Unknown',
           bpm: t.bpm,
           mood: (['High Energy', 'Hybrid Trap', 'Anthemic', 'Electro Drive'].includes(t.mood)
             ? t.mood
             : 'High Energy') as any,
-          energyLevel: Math.round(Math.min(1, Math.max(0, t.energy)) * 100),
-          matchScore: 90 - i * 3,
-          key: 'E Minor',
+          energyLevel: Math.round(Math.min(1, Math.max(0, t.energy / (t.energy > 1 ? 100 : 1))) * 100),
+          matchScore: typeof t.matchScore === 'number' ? t.matchScore : 90 - i * 3,
+          key: t.key || 'E Minor',
           previewUrl: t.url,
-          waveform: Array.from({ length: 32 }, (_, idx) => {
-            const v = 0.7 + Math.sin(idx / 3) * 0.15
-            return Math.min(1, Math.max(0.25, v))
-          }),
+          waveform: Array.isArray(t.waveform) && t.waveform.length > 0
+            ? t.waveform.slice(0, 32).map((v) => Math.min(1, Math.max(0.25, v)))
+            : Array.from({ length: 32 }, (_, idx) => Math.min(1, Math.max(0.25, 0.7 + Math.sin(idx / 3) * 0.15))),
         }))
         setMusicTracks(tracks)
 
-        // Insights (basic derived placeholder)
+        // Use server-derived energy curve when present (audio analysis from worker), else synthesize from beats
+        const serverCurve = Array.isArray(rec.energyCurve) ? rec.energyCurve : []
+        const curve = serverCurve.length > 0
+          ? serverCurve.slice(0, 32)
+          : Array.from({ length: Math.min(24, markers.length) }, (_, i) => 0.5 + 0.5 * Math.sin(i / 3))
+        setEnergyCurve(curve)
+
+        // Insights — averages reflect real signal from worker when available
         const avgConf = mapped.reduce((a: number, b: any) => a + (b.confidence || 0.8), 0) / Math.max(mapped.length, 1)
-        const avgBeat = 0.8
-        const avgEnergy = markers.reduce((a: number, b: any) => a + b.intensity, 0) / Math.max(markers.length, 1)
+        const downbeatCount = markers.filter((m) => m.intensity >= 0.9).length
+        const beatAlignment = markers.length > 0 ? Math.min(1, downbeatCount / Math.max(1, markers.length / 4)) : 0.8
+        const crowdEnergy = curve.length > 0
+          ? Math.min(1, curve.reduce((a, b) => a + b, 0) / curve.length)
+          : Math.min(1, markers.reduce((a, b) => a + b.intensity, 0) / Math.max(markers.length, 1))
         setInsights({
           accuracy: avgConf,
-          beatAlignment: avgBeat,
-          crowdEnergy: Math.min(1, avgEnergy),
+          beatAlignment,
+          crowdEnergy,
           notes: [
             mapped[0]?.descriptor ? `Top moment: ${mapped[0].descriptor}` : 'Highlights detected',
-            `Beat grid length: ${markers.length}`,
+            `Beat grid length: ${markers.length} (${downbeatCount} downbeats)`,
+            tracks[0]?.title ? `Top track match: ${tracks[0].title} @ ${tracks[0].bpm} BPM` : 'Music ranked by BPM/energy fit',
           ],
         })
 
@@ -506,6 +515,8 @@ export default function App() {
             beatMarkers={beatMarkers}
             selectedTrack={selectedTrack}
             onLaunchExport={handleOpenExport}
+            overlayConfig={overlayConfig}
+            onOverlayChange={setOverlayConfig}
           />
         )
       case 'export':

@@ -1,14 +1,22 @@
 export async function postJson(fn, payload) {
-    const res = await fetch(`/.netlify/functions/${fn}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(payload ?? {}),
-    });
-    if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text || `Request failed: ${res.status}`);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 25000);
+    try {
+        const res = await fetch(`/.netlify/functions/${fn}`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(payload ?? {}),
+            signal: controller.signal,
+        });
+        if (!res.ok) {
+            const text = await res.text();
+            throw new Error(text || `Request failed: ${res.status}`);
+        }
+        return (await res.json());
     }
-    return (await res.json());
+    finally {
+        clearTimeout(timer);
+    }
 }
 export const api = {
     createUploadUrl: (payload) => postJson('createUploadUrl', payload),

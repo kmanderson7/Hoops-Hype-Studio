@@ -29,10 +29,11 @@ export const handler: Handler = async (evt) => {
         clearTimeout(timer)
       }
     }
-    // Fallback simple grid
+    // Fallback grid: 130 BPM, 4/4 time, downbeats every 4 beats
     const bpm = 130
-    const beatGrid = Array.from({ length: 20 }).map((_, i) => (i * 60) / bpm)
-    return { statusCode: 200, body: JSON.stringify({ bpm, beatGrid, trackId }) }
+    const beatGrid = Array.from({ length: 32 }).map((_, i) => (i * 60) / bpm)
+    const downbeats = beatGrid.filter((_, i) => i % 4 === 0)
+    return { statusCode: 200, body: JSON.stringify({ bpm, beatGrid, downbeats, trackId }) }
   } catch (e: any) {
     return { statusCode: 500, body: JSON.stringify({ title: 'Server error', detail: e?.message || String(e) }) }
   }

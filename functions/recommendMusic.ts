@@ -25,7 +25,8 @@ export const handler: Handler = async (evt) => {
     const { assetId, playStyle, targetLength, proxyUrl } = body
 
     // Step 1: Get audio energy profile from GPU worker
-    let energyProfile = { avgBpm: 135, avgEnergy: 0.75, peakMoments: [] }
+    type EnergyProfile = { avgBpm: number; avgEnergy: number; peakMoments: number[]; energyCurve?: number[] }
+    let energyProfile: EnergyProfile = { avgBpm: 135, avgEnergy: 0.75, peakMoments: [], energyCurve: [] }
 
     if (GPU_WORKER_BASE_URL && GPU_WORKER_TOKEN && (assetId || proxyUrl)) {
       const controller = new AbortController()
@@ -41,7 +42,13 @@ export const handler: Handler = async (evt) => {
           signal: controller.signal,
         })
         if (analysisRes.ok) {
-          energyProfile = await analysisRes.json()
+          const j = await analysisRes.json()
+          energyProfile = {
+            avgBpm: typeof j.avgBpm === 'number' ? j.avgBpm : 135,
+            avgEnergy: typeof j.avgEnergy === 'number' ? j.avgEnergy : 0.75,
+            peakMoments: Array.isArray(j.peakMoments) ? j.peakMoments : [],
+            energyCurve: Array.isArray(j.energyCurve) ? j.energyCurve : [],
+          }
         }
       } catch (err) {
         console.warn('Audio analysis failed, using defaults:', err)
@@ -128,6 +135,20 @@ export const handler: Handler = async (evt) => {
       else if (track.mood.toLowerCase().includes('electro') || track.mood.toLowerCase().includes('drive'))
         normalizedMood = 'Electro Drive'
 
+      // Synthesize a deterministic 32-bin waveform shape that hints at mood + energy
+      const baseAmp = Math.min(1, Math.max(0.4, track.energy))
+      const moodPhase = normalizedMood === 'Hybrid Trap' ? 1.7 : normalizedMood === 'Anthemic' ? 0.5 : 1.1
+      const waveform = Array.from({ length: 32 }, (_, idx) => {
+        const v = baseAmp + Math.sin((idx / 32) * Math.PI * 4 + moodPhase) * 0.18 + (idx % 4 === 0 ? 0.08 : 0)
+        return Math.min(1, Math.max(0.2, v))
+      })
+
+      // Pick a plausible key based on mood — purely cosmetic surface for the UI
+      const moodKey =
+        normalizedMood === 'Hybrid Trap' ? 'F# Minor' :
+        normalizedMood === 'Anthemic' ? 'C Major' :
+        normalizedMood === 'Electro Drive' ? 'A Minor' : 'E Minor'
+
       return {
         url: track.url,
         title: track.title,
@@ -136,7 +157,9 @@ export const handler: Handler = async (evt) => {
         mood: normalizedMood,
         energy: Math.round(track.energy * 100),
         matchScore: Math.round(matchScore * 100),
-        license: track.license
+        license: track.license,
+        key: moodKey,
+        waveform,
       }
     })
 
@@ -144,7 +167,16 @@ export const handler: Handler = async (evt) => {
     scored.sort((a, b) => b.matchScore - a.matchScore)
     const topTracks = scored.slice(0, 3)
 
-    return { statusCode: 200, body: JSON.stringify({ tracks: topTracks }) }
+    return {
+      statusCode: 200,
+      body: JSON.stringify({
+        tracks: topTracks,
+        avgBpm: energyProfile.avgBpm,
+        avgEnergy: energyProfile.avgEnergy,
+        peakMoments: energyProfile.peakMoments,
+        energyCurve: energyProfile.energyCurve || [],
+      }),
+    }
   } catch (e: any) {
     return {
       statusCode: 500,
