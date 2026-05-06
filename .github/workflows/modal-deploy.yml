@@ -29,13 +29,7 @@ jobs:
             echo "Missing MODAL_TOKEN_ID or MODAL_TOKEN_SECRET repo secrets" >&2
             exit 1
           fi
-          python - << 'PY'
-import os, subprocess, sys
-tid = os.environ['MODAL_TOKEN_ID']
-ts = os.environ['MODAL_TOKEN_SECRET']
-cmd = [sys.executable, '-m', 'modal.cli.entry_point', 'token', 'set', '--token-id', tid, '--token-secret', ts]
-subprocess.run(cmd, check=True)
-PY
+          modal token set --token-id "$MODAL_TOKEN_ID" --token-secret "$MODAL_TOKEN_SECRET"
       - name: Deploy worker app
         run: |
           modal deploy workers/modal/modal_app.py
