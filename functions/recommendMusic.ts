@@ -28,6 +28,8 @@ export const handler: Handler = async (evt) => {
     let energyProfile = { avgBpm: 135, avgEnergy: 0.75, peakMoments: [] }
 
     if (GPU_WORKER_BASE_URL && GPU_WORKER_TOKEN && (assetId || proxyUrl)) {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 8_000)
       try {
         const analysisRes = await fetch(`${GPU_WORKER_BASE_URL}/audio-analysis`, {
           method: 'POST',
@@ -35,14 +37,16 @@ export const handler: Handler = async (evt) => {
             'content-type': 'application/json',
             authorization: `Bearer ${GPU_WORKER_TOKEN}`
           },
-          body: JSON.stringify({ assetId: assetId || 'demo', proxyUrl })
+          body: JSON.stringify({ assetId: assetId || 'demo', proxyUrl }),
+          signal: controller.signal,
         })
-
         if (analysisRes.ok) {
           energyProfile = await analysisRes.json()
         }
       } catch (err) {
         console.warn('Audio analysis failed, using defaults:', err)
+      } finally {
+        clearTimeout(timer)
       }
     }
 
@@ -51,12 +55,14 @@ export const handler: Handler = async (evt) => {
     const candidates: any[] = []
 
     if (MUSIC_API_BASE_URL && MUSIC_API_KEY) {
+      const musicController = new AbortController()
+      const musicTimer = setTimeout(() => musicController.abort(), 8_000)
       try {
         const url = `${MUSIC_API_BASE_URL}?key=${encodeURIComponent(
           MUSIC_API_KEY
         )}&q=${encodeURIComponent(q)}&media_type=audio&per_page=10`
 
-        const res = await fetch(url)
+        const res = await fetch(url, { signal: musicController.signal })
         if (res.ok) {
           const data = await res.json()
           candidates.push(
@@ -74,6 +80,8 @@ export const handler: Handler = async (evt) => {
         }
       } catch {
         // Fall through to defaults
+      } finally {
+        clearTimeout(musicTimer)
       }
     }
 

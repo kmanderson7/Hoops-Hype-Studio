@@ -6,3 +6,4 @@ dist
 netlify/functions-serve
 netlify/.netlify
 coverage
+tmp_env_before.txt

@@ -11,15 +11,24 @@ export const handler: Handler = async (evt) => {
     const body = JSON.parse(evt.body || '{}') as { assetId?: string; proxyUrl?: string; videoUrl?: string }
     // Prefer proxyUrl/videoUrl for demo; assetId for real pipeline
     if (GPU_WORKER_BASE_URL && GPU_WORKER_TOKEN) {
-      const res = await fetch(`${GPU_WORKER_BASE_URL}/highlights`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${GPU_WORKER_TOKEN}` },
-        body: JSON.stringify({ assetId: body.assetId || 'demo', proxyUrl: body.proxyUrl || body.videoUrl }),
-      })
-      if (!res.ok) return { statusCode: res.status, body: await res.text() }
-      const data = await res.json()
-      await log({ level: 'info', msg: 'highlights_ok', assetId: body.assetId || 'demo' })
-      return { statusCode: 200, body: JSON.stringify(data) }
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 8_000)
+      try {
+        const res = await fetch(`${GPU_WORKER_BASE_URL}/highlights`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${GPU_WORKER_TOKEN}` },
+          body: JSON.stringify({ assetId: body.assetId || 'demo', proxyUrl: body.proxyUrl || body.videoUrl }),
+          signal: controller.signal,
+        })
+        if (!res.ok) return { statusCode: res.status, body: await res.text() }
+        const data = await res.json()
+        await log({ level: 'info', msg: 'highlights_ok', assetId: body.assetId || 'demo' })
+        return { statusCode: 200, body: JSON.stringify(data) }
+      } catch (abortErr: any) {
+        if (abortErr?.name !== 'AbortError') throw abortErr
+      } finally {
+        clearTimeout(timer)
+      }
     }
 
     // Fallback stub

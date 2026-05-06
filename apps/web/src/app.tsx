@@ -12,6 +12,8 @@ import { api } from './lib/apiClient'
 export default function App() {
   const [isRendering, setIsRendering] = useState(false)
   const renderTimers = useRef<number[]>([])
+  const assetIdRef = useRef<string | undefined>(undefined)
+  const proxyUrlRef = useRef<string | undefined>(undefined)
   const {
     assetId,
     proxyUrl,
@@ -88,6 +90,9 @@ export default function App() {
     reset: state.reset,
   }))
 
+  assetIdRef.current = assetId
+  proxyUrlRef.current = proxyUrl
+
   useEffect(() => {
     if (!uploadRunId) return
 
@@ -105,7 +110,7 @@ export default function App() {
       try {
         // Step 1: Highlights
         updateTask('highlight-detection', { status: 'running', progress: 10 })
-        const hi = await api.detectHighlights({ videoUrl: proxyUrl || fileInfo?.previewUrl })
+        const hi = await api.detectHighlights({ videoUrl: proxyUrlRef.current || fileInfo?.previewUrl })
         const mapped = (hi as any).segments?.map((s: any, i: number) => {
           if (s?.timestamp && s?.action) return s
           const action = s.label === 'dunk' ? 'Dunk' : s.label === 'three' ? 'Three Pointer' : 'Assist'
@@ -130,7 +135,7 @@ export default function App() {
 
         // Step 2: Beats
         updateTask('beat-sync', { status: 'running', progress: 20 })
-        const beats = await api.detectBeats({ assetId, trackId: selectedTrackId, trackUrl: selectedTrack?.previewUrl, previewUrl: selectedTrack?.previewUrl })
+        const beats = await api.detectBeats({ assetId: assetIdRef.current, trackId: selectedTrackId, trackUrl: selectedTrack?.previewUrl, previewUrl: selectedTrack?.previewUrl })
         const markers = beats.beatGrid.map((t, idx) => ({ id: `beat-${idx}`, time: t, intensity: idx % 4 === 0 ? 0.92 : 0.6 }))
         setBeatMarkers(markers)
         // derive a lightweight energy curve from beats
@@ -271,18 +276,16 @@ export default function App() {
         xhr.send(file)
       })
 
-      // Trigger ingest to analysis pipeline (UI effect will handle API calls)
-      if (newAssetId && key) {
-        try {
-          const ingest = await api.ingestAsset({ assetId: newAssetId, key })
-          if (ingest?.proxyUrl) setRenderStatus('Proxy generated; proceeding to analysis...')
-          // Record asset/proxy for downstream calls
-          setAssetInfo({ assetId: newAssetId, proxyUrl: ingest?.proxyUrl })
-        } catch (e) {
-          setRenderStatus(`Ingest error: ${e}`)
-        }
-      }
+      // Start analysis pipeline immediately; ingest runs in background
       ingestUpload({ file, previewUrl })
+      if (newAssetId && key) {
+        api.ingestAsset({ assetId: newAssetId, key })
+          .then(ingest => {
+            if (ingest?.proxyUrl) setRenderStatus('Proxy generated; proceeding to analysis...')
+            setAssetInfo({ assetId: newAssetId, proxyUrl: ingest?.proxyUrl })
+          })
+          .catch(e => setRenderStatus(`Ingest error: ${e}`))
+      }
     } catch (e) {
       setRenderStatus(`Upload error: ${e}`)
     }

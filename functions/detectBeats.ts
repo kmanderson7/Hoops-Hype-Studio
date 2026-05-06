@@ -11,14 +11,23 @@ export const handler: Handler = async (evt) => {
     const trackId = body?.trackId
     const trackUrl = body?.trackUrl || body?.previewUrl
     if (GPU_WORKER_BASE_URL && GPU_WORKER_TOKEN && trackUrl) {
-      const res = await fetch(`${GPU_WORKER_BASE_URL}/beats`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${GPU_WORKER_TOKEN}` },
-        body: JSON.stringify({ trackUrl }),
-      })
-      if (!res.ok) return { statusCode: res.status, body: await res.text() }
-      const data = await res.json()
-      return { statusCode: 200, body: JSON.stringify(data) }
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 8_000)
+      try {
+        const res = await fetch(`${GPU_WORKER_BASE_URL}/beats`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${GPU_WORKER_TOKEN}` },
+          body: JSON.stringify({ trackUrl }),
+          signal: controller.signal,
+        })
+        if (!res.ok) return { statusCode: res.status, body: await res.text() }
+        const data = await res.json()
+        return { statusCode: 200, body: JSON.stringify(data) }
+      } catch (abortErr: any) {
+        if (abortErr?.name !== 'AbortError') throw abortErr
+      } finally {
+        clearTimeout(timer)
+      }
     }
     // Fallback simple grid
     const bpm = 130

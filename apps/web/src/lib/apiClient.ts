@@ -1,14 +1,21 @@
 export async function postJson<T>(fn: string, payload?: unknown): Promise<T> {
-  const res = await fetch(`/.netlify/functions/${fn}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(payload ?? {}),
-  })
-  if (!res.ok) {
-    const text = await res.text()
-    throw new Error(text || `Request failed: ${res.status}`)
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 25_000)
+  try {
+    const res = await fetch(`/.netlify/functions/${fn}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload ?? {}),
+      signal: controller.signal,
+    })
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(text || `Request failed: ${res.status}`)
+    }
+    return (await res.json()) as T
+  } finally {
+    clearTimeout(timer)
   }
-  return (await res.json()) as T
 }
 
 // Shapes returned by current function stubs

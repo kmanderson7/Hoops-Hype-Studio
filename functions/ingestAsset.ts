@@ -24,7 +24,7 @@ export const handler: Handler = async (evt) => {
       return { statusCode: 500, body: JSON.stringify({ title: 'Storage not configured' }) }
     }
     if (!GPU_WORKER_BASE_URL || !GPU_WORKER_TOKEN) {
-      return { statusCode: 500, body: JSON.stringify({ title: 'Worker not configured' }) }
+      return { statusCode: 200, body: JSON.stringify({ proxyUrl: undefined }) }
     }
 
     // Optional integrity check: if MD5 provided and single-part upload, compare to ETag
@@ -60,17 +60,29 @@ export const handler: Handler = async (evt) => {
       expiresIn: 900,
     })
 
-    const res = await fetch(`${GPU_WORKER_BASE_URL}/ingest`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${GPU_WORKER_TOKEN}`,
-      },
-      body: JSON.stringify({ assetId: body.assetId, sourceUrl }),
-    })
-    if (!res.ok) return { statusCode: res.status, body: await res.text() }
-    const data = await res.json()
-    return { statusCode: 200, body: JSON.stringify(data) }
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 8_000)
+    try {
+      const res = await fetch(`${GPU_WORKER_BASE_URL}/ingest`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${GPU_WORKER_TOKEN}`,
+        },
+        body: JSON.stringify({ assetId: body.assetId, sourceUrl }),
+        signal: controller.signal,
+      })
+      if (!res.ok) return { statusCode: res.status, body: await res.text() }
+      const data = await res.json()
+      return { statusCode: 200, body: JSON.stringify(data) }
+    } catch (abortErr: any) {
+      if (abortErr?.name === 'AbortError') {
+        return { statusCode: 200, body: JSON.stringify({ proxyUrl: undefined }) }
+      }
+      throw abortErr
+    } finally {
+      clearTimeout(timer)
+    }
   } catch (e: any) {
     return { statusCode: 500, body: JSON.stringify({ title: 'Server error', detail: e?.message || String(e) }) }
   }
