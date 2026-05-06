@@ -7,11 +7,11 @@ jobs:
   provision-deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # 1) Sync Netlify environment from GitHub secrets
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '20'
       - name: Install Netlify CLI
@@ -68,7 +68,7 @@ jobs:
 
       # 2) Deploy Modal GPU Worker
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
       - name: Install Modal CLI
