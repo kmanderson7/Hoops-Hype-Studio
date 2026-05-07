@@ -15,5 +15,8 @@
     "fmt": "prettier -w .",
     "test": "vitest run",
     "lint": "eslint . --ext .ts,.tsx,.js,.jsx"
+  },
+  "devDependencies": {
+    "dotenv": "^17.4.2"
   }
 }
