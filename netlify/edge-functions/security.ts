@@ -1,4 +1,4 @@
-export default async (request: Request) => {
+export default async (request: Request, context: any) => {
   const url = new URL(request.url)
   // Token-bucket rate limiting (prefers Upstash Redis; falls back to memory)
   const ip = request.headers.get('x-forwarded-for') || 'unknown'
@@ -63,7 +63,7 @@ export default async (request: Request) => {
     }
   }
 
-  return fetch(request)
+  return context.next()
 }
 
 export const config = {
