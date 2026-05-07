@@ -62,7 +62,7 @@ export function presignS3Url(params: PresignParams): string {
   // Query params for presigning
   const qs = new URLSearchParams()
   qs.set('X-Amz-Algorithm', algorithm)
-  qs.set('X-Amz-Credential', `${encodeURIComponent(accessKeyId + '/' + credentialScope)}`)
+  qs.set('X-Amz-Credential', `${accessKeyId}/${credentialScope}`)
   qs.set('X-Amz-Date', amzDate)
   qs.set('X-Amz-Expires', String(Math.min(604800, Math.max(1, expiresIn))))
   // Signed headers: at minimum host; include content-type only if you will send it and want it signed
