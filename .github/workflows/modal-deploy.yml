@@ -16,10 +16,10 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: '3.11'
-      - name: Install Modal CLI
+      - name: Install Modal CLI and stub-eval deps
         run: |
           python -m pip install --upgrade pip
-          pip install modal
+          pip install modal fastapi pydantic boto3
       - name: Configure Modal auth
         env:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
