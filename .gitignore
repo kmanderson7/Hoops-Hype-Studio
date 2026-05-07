@@ -5,5 +5,13 @@ dist
 .env.*
 netlify/functions-serve
 netlify/.netlify
+.netlify
 coverage
 tmp_env_before.txt
+
+# Local tool state
+.claude/
+
+# Build/runtime artifacts
+*.log
+__pycache__/
