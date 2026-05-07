@@ -1393,8 +1393,25 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
                 subprocess.run(fallback_cmd, check=True)
 
             key = f"exports/{req.assetId}-{p.presetId}.mp4"
-            s3.upload_file(str(out_path), bucket, key, ExtraArgs={"ContentType": "video/mp4"})
-            url = s3.generate_presigned_url("get_object", Params={"Bucket": bucket, "Key": key}, ExpiresIn=3600)
+            download_name = f"hype-{p.presetId}-{req.assetId}.mp4"
+            s3.upload_file(
+                str(out_path),
+                bucket,
+                key,
+                ExtraArgs={
+                    "ContentType": "video/mp4",
+                    "ContentDisposition": f'attachment; filename="{download_name}"',
+                },
+            )
+            url = s3.generate_presigned_url(
+                "get_object",
+                Params={
+                    "Bucket": bucket,
+                    "Key": key,
+                    "ResponseContentDisposition": f'attachment; filename="{download_name}"',
+                },
+                ExpiresIn=3600,
+            )
             outputs.append(RenderOutput(presetId=p.presetId, url=url))
 
     return RenderResponse(outputs=outputs)
