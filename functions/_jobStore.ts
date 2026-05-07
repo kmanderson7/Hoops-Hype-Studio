@@ -78,30 +78,22 @@ export function getRenderJobStatus(id: string): {
   const ratio = Math.max(0, Math.min(1, elapsed / job.durationMs))
   const progress = Math.round(ratio * 100)
 
+  // Status derives from BOTH simulated progress AND whether real downloads
+  // are present. Don't flip to 'done' until the Modal worker has returned
+  // signed URLs — otherwise we'd have a "ready" job with no actual files.
   let status: JobStatus = 'running'
   if (progress === 0) status = 'queued'
-  if (progress >= 100) status = 'done'
+  // Only mark as done when downloads exist; the simulated timer just paces UX
+  if (progress >= 100 && job.downloads && job.downloads.length > 0) status = 'done'
 
-  // Per-preset progress (stagger slightly)
+  // Per-preset progress (stagger slightly). Hold at 99% until real downloads land.
+  const cappedProgress = job.downloads ? progress : Math.min(99, progress)
   const presets = job.presets.map((presetId, idx) => ({
     presetId,
-    progress: Math.min(100, Math.max(5, Math.round(progress - idx * 5))),
+    progress: Math.min(100, Math.max(5, Math.round(cappedProgress - idx * 5))),
   }))
 
-  // When complete, synthesize downloads and persist to job
-  let downloads: { presetId: string; url: string; expiresAt: string }[] | undefined
-  if (status === 'done') {
-    if (!job.downloads) {
-      const exp = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
-      job.downloads = job.presets.map((p) => ({
-        presetId: p,
-        url: `https://example.com/exports/${job.assetId ?? 'asset'}-${p}.mp4`,
-        expiresAt: exp,
-      }))
-      jobs.set(id, job)
-    }
-    downloads = job.downloads
-  }
+  const downloads = status === 'done' ? job.downloads : undefined
 
   const eta = status === 'done' ? undefined : Math.max(1, Math.round((job.durationMs - elapsed) / 1000))
   job.status = status

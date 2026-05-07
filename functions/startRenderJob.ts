@@ -1,9 +1,9 @@
 import type { Handler } from '@netlify/functions'
-import { createRenderJob, setRenderJobDownloads } from './_jobStore'
+import { createRenderJob } from './_jobStore'
 import { requireHmacNonce, checkRenderConcurrency, setRenderLock } from './_auth'
 import { log, captureException } from './_obs'
 
-const { GPU_WORKER_BASE_URL = '', GPU_WORKER_TOKEN = '' } = process.env
+const { GPU_WORKER_BASE_URL = '', GPU_WORKER_TOKEN = '', URL: SITE_URL = '' } = process.env
 
 export const handler: Handler = async (evt) => {
   try {
@@ -29,28 +29,31 @@ export const handler: Handler = async (evt) => {
     if (ip) await setRenderLock(ip, job.id, 15 * 60)
     await log({ level: 'info', msg: 'render_job_created', jobId: job.id, presets: presetIds })
 
-    // If GPU worker is configured, kick off render immediately and capture outputs
+    // Hand off the long Modal /render call to a Background Function so this
+    // synchronous handler can return jobId in <1s. Background fns get up to
+    // 15 minutes of runtime — enough for any reasonable render. The frontend
+    // polls getJobStatus and sees downloads appear when Modal completes.
     if (GPU_WORKER_BASE_URL && GPU_WORKER_TOKEN) {
+      const origin = SITE_URL || `https://${(evt.headers['host'] as string) || ''}`
       try {
-        const res = await fetch(`${GPU_WORKER_BASE_URL}/render`, {
+        // Awaiting this is fine — Netlify ACKs background invocations near-instantly
+        // (just registers the job, doesn't wait for it to finish). If we DON'T await,
+        // the in-flight fetch would be killed when the handler returns.
+        await fetch(`${origin}/.netlify/functions/runRender-background`, {
           method: 'POST',
-          headers: { 'content-type': 'application/json', authorization: `Bearer ${GPU_WORKER_TOKEN}` },
+          headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
+            jobId: job.id,
             assetId: body.assetId,
             trackUrl: body.metadata && (body.metadata as any).trackUrl,
             presets: presetIds.map((p) => ({ presetId: p })),
             metadata: body.metadata || {},
           }),
         })
-        if (res.ok) {
-          const data = await res.json()
-          if (data?.outputs) {
-            await (setRenderJobDownloads as any)(job.id, data.outputs)
-          }
-        }
       } catch (e: any) {
-        // ignore worker errors; job will still simulate progress
-        await captureException(e, { where: 'startRenderJob:worker_render' })
+        // Don't fail the whole request if the kickoff fetch errors — the job
+        // record still exists and the frontend will simply never see downloads.
+        await captureException(e, { where: 'startRenderJob:bg_kickoff' })
       }
     }
 

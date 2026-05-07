@@ -66,16 +66,14 @@ export async function getRenderJobStatus(id: string): Promise<{
   const elapsed = Date.now() - job.createdAt
   const ratio = Math.max(0, Math.min(1, elapsed / job.durationMs))
   const progress = Math.round(ratio * 100)
-  let status: JobStatus = progress === 0 ? 'queued' : progress >= 100 ? 'done' : 'running'
-  const presets = job.presets.map((p, i) => ({ presetId: p, progress: Math.min(100, Math.max(5, progress - i * 5)) }))
-
-  if (status === 'done' && !job.downloads) {
-    const exp = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
-    job.downloads = job.presets.map((p) => ({ presetId: p, url: `https://example.com/exports/${job.assetId ?? 'asset'}-${p}.mp4`, expiresAt: exp }))
-    await setRenderJob(job)
-  }
+  // Don't flip to 'done' until real downloads exist — otherwise we'd surface
+  // a "ready" job whose files don't exist anywhere.
+  const hasDownloads = !!(job.downloads && job.downloads.length > 0)
+  let status: JobStatus = progress === 0 ? 'queued' : progress >= 100 && hasDownloads ? 'done' : 'running'
+  const cappedProgress = hasDownloads ? progress : Math.min(99, progress)
+  const presets = job.presets.map((p, i) => ({ presetId: p, progress: Math.min(100, Math.max(5, cappedProgress - i * 5)) }))
   const eta = status === 'done' ? undefined : Math.max(1, Math.round((job.durationMs - elapsed) / 1000))
-  return { status, progress, eta, presets, downloads: job.downloads }
+  return { status, progress: cappedProgress, eta, presets, downloads: status === 'done' ? job.downloads : undefined }
 }
 
 export async function setRenderJobDownloads(id: string, outputs: { presetId: string; url: string }[]) {

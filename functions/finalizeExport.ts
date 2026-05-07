@@ -12,13 +12,12 @@ export const handler: Handler = async (evt) => {
     if (!id) return { statusCode: 400, body: JSON.stringify({ title: 'Invalid input', detail: 'renderJobId required' }) }
     const job = await (getRenderJob as any)(id)
     if (!job) return { statusCode: 404, body: JSON.stringify({ title: 'Not found' }) }
-    const downloads = (job.downloads || job.presets.map((p) => ({
-      presetId: p,
-      url: `https://example.com/exports/${job.assetId ?? 'asset'}-${p}.mp4`,
-      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-    })))
-    await log({ level: 'info', msg: 'finalize_export', renderJobId: id, count: downloads.length })
-    return { statusCode: 200, body: JSON.stringify({ downloads }) }
+    if (!job.downloads || job.downloads.length === 0) {
+      // Render hasn't completed yet (or worker failed). Don't surface fake URLs.
+      return { statusCode: 409, body: JSON.stringify({ title: 'Not ready', detail: 'RENDER_IN_PROGRESS' }) }
+    }
+    await log({ level: 'info', msg: 'finalize_export', renderJobId: id, count: job.downloads.length })
+    return { statusCode: 200, body: JSON.stringify({ downloads: job.downloads }) }
   } catch (e: any) {
     await captureException(e, { where: 'finalizeExport' })
     return { statusCode: 500, body: JSON.stringify({ title: 'Server error', detail: e?.message || String(e) }) }
