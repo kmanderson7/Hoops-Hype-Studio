@@ -1,3 +1,4 @@
+import { useMemo, useState } from 'react'
 import type {
   BeatMarker,
   HighlightSegment,
@@ -10,6 +11,8 @@ interface AnalysisStageProps {
   highlights: HighlightSegment[]
   beatMarkers: BeatMarker[]
   energyCurve: number[]
+  targetJersey?: string
+  onTargetJerseyChange?: (jersey: string | undefined) => void
   onProceed?: () => void
 }
 
@@ -19,8 +22,29 @@ export function AnalysisStage({
   highlights,
   beatMarkers,
   energyCurve,
+  targetJersey,
+  onTargetJerseyChange,
   onProceed,
 }: AnalysisStageProps) {
+  // Tally how many scenes each detected jersey appears in
+  const jerseyCounts = useMemo(() => {
+    const counts: Record<string, number> = {}
+    for (const h of highlights) {
+      for (const j of h.jerseyNumbers || []) {
+        counts[j] = (counts[j] || 0) + 1
+      }
+    }
+    return Object.entries(counts).sort(([, a], [, b]) => b - a)
+  }, [highlights])
+
+  // Filter visible highlights to those featuring the chosen jersey
+  const visibleHighlights = useMemo(() => {
+    if (!targetJersey) return highlights
+    return highlights.filter((h) => (h.jerseyNumbers || []).includes(targetJersey))
+  }, [highlights, targetJersey])
+
+  const [customJersey, setCustomJersey] = useState('')
+
   return (
     <section className="space-y-6">
       <header className="flex items-start justify-between gap-4">
@@ -78,41 +102,134 @@ export function AnalysisStage({
         </ul>
       </div>
 
+      {highlights.length > 0 && onTargetJerseyChange && (
+        <div className="rounded-3xl border border-amber-400/20 bg-amber-500/5 p-5 backdrop-blur">
+          <div className="flex flex-wrap items-baseline justify-between gap-3">
+            <div>
+              <p className="text-xs uppercase tracking-[0.18em] text-amber-200/80">Hype Mode</p>
+              <h3 className="mt-1 text-lg font-semibold text-white">
+                {targetJersey ? `Player #${targetJersey}` : 'Entire clip'}
+              </h3>
+              <p className="mt-1 text-xs text-slate-400">
+                {targetJersey
+                  ? `Filtering to ${visibleHighlights.length} of ${highlights.length} plays featuring #${targetJersey}.`
+                  : 'Using every detected highlight. Pick a jersey number to focus the cut on one player.'}
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => onTargetJerseyChange(undefined)}
+                className={`rounded-full border px-3 py-1 text-xs font-semibold transition ${
+                  !targetJersey
+                    ? 'border-amber-400/60 bg-amber-400/20 text-amber-100'
+                    : 'border-white/10 bg-slate-950/60 text-slate-300 hover:bg-slate-900'
+                }`}
+              >
+                Entire clip
+              </button>
+            </div>
+          </div>
+
+          {jerseyCounts.length > 0 && (
+            <div className="mt-4 flex flex-wrap gap-2">
+              {jerseyCounts.map(([num, count]) => (
+                <button
+                  key={num}
+                  type="button"
+                  onClick={() => onTargetJerseyChange(num)}
+                  className={`rounded-full border px-3 py-1 text-xs font-semibold transition ${
+                    targetJersey === num
+                      ? 'border-amber-400/60 bg-amber-400/20 text-amber-100'
+                      : 'border-white/10 bg-slate-950/60 text-slate-200 hover:bg-slate-900'
+                  }`}
+                >
+                  #{num} <span className="ml-1 text-[10px] text-slate-400">({count})</span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          <form
+            className="mt-4 flex gap-2"
+            onSubmit={(e) => {
+              e.preventDefault()
+              const trimmed = customJersey.trim()
+              if (trimmed && /^\d{1,3}$/.test(trimmed)) {
+                onTargetJerseyChange(trimmed)
+                setCustomJersey('')
+              }
+            }}
+          >
+            <input
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              maxLength={3}
+              value={customJersey}
+              onChange={(e) => setCustomJersey(e.target.value.replace(/[^0-9]/g, ''))}
+              placeholder={jerseyCounts.length === 0 ? 'No jerseys auto-detected — type one' : 'Other #'}
+              className="w-32 rounded-full border border-white/10 bg-slate-950/60 px-3 py-1 text-xs text-slate-100 placeholder:text-slate-500 focus:border-amber-400/60 focus:outline-none"
+            />
+            <button
+              type="submit"
+              className="rounded-full border border-amber-400/40 bg-amber-400/10 px-3 py-1 text-xs font-semibold text-amber-100 hover:bg-amber-400/20"
+            >
+              Apply
+            </button>
+          </form>
+        </div>
+      )}
+
       {highlights.length > 0 && (
         <div className="rounded-3xl border border-white/10 bg-slate-900/70 p-5 backdrop-blur">
           <div className="flex flex-wrap items-baseline justify-between gap-3">
             <div>
               <p className="text-xs uppercase tracking-[0.18em] text-indigo-200/80">Highlight Board</p>
-              <h3 className="mt-1 text-lg font-semibold text-white">Auto-selected hype moments</h3>
+              <h3 className="mt-1 text-lg font-semibold text-white">
+                {targetJersey ? `Auto-selected plays for #${targetJersey}` : 'Auto-selected hype moments'}
+              </h3>
             </div>
             <button
               type="button"
               onClick={onProceed}
-              className="rounded-full border border-indigo-400/50 bg-indigo-500/10 px-4 py-1.5 text-sm font-medium text-indigo-100 transition hover:bg-indigo-500/20"
+              disabled={visibleHighlights.length === 0}
+              className="rounded-full border border-indigo-400/50 bg-indigo-500/10 px-4 py-1.5 text-sm font-medium text-indigo-100 transition hover:bg-indigo-500/20 disabled:cursor-not-allowed disabled:opacity-40"
             >
               Advance to Music Intelligence
             </button>
           </div>
 
-          <div className="mt-5 grid gap-4 lg:grid-cols-2">
-            {highlights.map((highlight) => (
-              <article
-                key={highlight.id}
-                className="flex flex-col gap-3 rounded-2xl border border-white/10 bg-slate-950/60 p-4"
-              >
-                <div className="flex items-center justify-between text-xs uppercase tracking-[0.16em] text-indigo-200/70">
-                  <span>{highlight.timestamp}</span>
-                  <span>{highlight.action}</span>
-                </div>
-                <p className="text-sm font-medium text-white">{highlight.descriptor}</p>
-                <dl className="grid grid-cols-3 gap-2 text-[11px] uppercase tracking-[0.12em] text-slate-400">
-                  <HighlightStat label="Score" value={`${Math.round(highlight.score * 100)}%`} />
-                  <HighlightStat label="Motion" value={`${Math.round(highlight.motion * 100)}%`} />
-                  <HighlightStat label="Audio" value={`${Math.round(highlight.audioPeak * 100)}%`} />
-                </dl>
-              </article>
-            ))}
-          </div>
+          {visibleHighlights.length === 0 ? (
+            <p className="mt-5 rounded-2xl border border-white/10 bg-slate-950/60 p-4 text-sm text-slate-400">
+              No plays found featuring #{targetJersey}. Try a different number or revert to "Entire clip".
+            </p>
+          ) : (
+            <div className="mt-5 grid gap-4 lg:grid-cols-2">
+              {visibleHighlights.map((highlight) => (
+                <article
+                  key={highlight.id}
+                  className="flex flex-col gap-3 rounded-2xl border border-white/10 bg-slate-950/60 p-4"
+                >
+                  <div className="flex items-center justify-between text-xs uppercase tracking-[0.16em] text-indigo-200/70">
+                    <span>{highlight.timestamp}</span>
+                    <span>{highlight.action}</span>
+                  </div>
+                  <p className="text-sm font-medium text-white">{highlight.descriptor}</p>
+                  {highlight.jerseyNumbers && highlight.jerseyNumbers.length > 0 && (
+                    <p className="text-[11px] uppercase tracking-[0.16em] text-amber-200/70">
+                      Players: {highlight.jerseyNumbers.map((n) => `#${n}`).join(' · ')}
+                    </p>
+                  )}
+                  <dl className="grid grid-cols-3 gap-2 text-[11px] uppercase tracking-[0.12em] text-slate-400">
+                    <HighlightStat label="Score" value={`${Math.round(highlight.score * 100)}%`} />
+                    <HighlightStat label="Motion" value={`${Math.round(highlight.motion * 100)}%`} />
+                    <HighlightStat label="Audio" value={`${Math.round(highlight.audioPeak * 100)}%`} />
+                  </dl>
+                </article>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

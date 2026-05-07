@@ -20,7 +20,22 @@ export async function postJson<T>(fn: string, payload?: unknown): Promise<T> {
 
 // Shapes returned by current function stubs
 type DetectHighlightsFn = {
-  segments: { id: string; start: number; end: number; label: string; confidence: number; score: number }[]
+  segments: {
+    id: string
+    start?: number
+    end?: number
+    label?: string
+    timestamp?: string
+    action?: string
+    descriptor?: string
+    confidence: number
+    score: number
+    audioPeak?: number
+    motion?: number
+    clipDuration?: number
+    jerseyNumbers?: string[]
+    featuredBbox?: number[]
+  }[]
   proxyUrl?: string
 }
 
@@ -48,7 +63,8 @@ type RecommendMusicFn = {
 export const api = {
   createUploadUrl: (payload: { fileName: string; size: number; type: string; scope?: 'uploads' | 'logos' }) =>
     postJson<{ assetId: string; uploadUrl: string; proxyUrl?: string; key?: string }>('createUploadUrl', payload),
-  detectHighlights: (payload: { videoUrl?: string }) => postJson<DetectHighlightsFn>('detectHighlights', payload),
+  detectHighlights: (payload: { videoUrl?: string; assetId?: string; proxyUrl?: string; targetJersey?: string }) =>
+    postJson<DetectHighlightsFn>('detectHighlights', payload),
   detectBeats: (payload: { assetId?: string; trackId?: string; trackUrl?: string; previewUrl?: string }) =>
     postJson<DetectBeatsFn>('detectBeats', payload),
   recommendMusic: (payload: { assetId?: string; proxyUrl?: string; playStyle?: string; targetLength?: number; query?: string }) =>

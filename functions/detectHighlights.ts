@@ -8,7 +8,7 @@ export const handler: Handler = async (evt) => {
   try {
     const guard = await requireHmacNonce({ headers: evt.headers as any, bodyText: evt.body || '' })
     if (guard) return guard
-    const body = JSON.parse(evt.body || '{}') as { assetId?: string; proxyUrl?: string; videoUrl?: string }
+    const body = JSON.parse(evt.body || '{}') as { assetId?: string; proxyUrl?: string; videoUrl?: string; targetJersey?: string }
     // Prefer proxyUrl/videoUrl for demo; assetId for real pipeline
     if (GPU_WORKER_BASE_URL && GPU_WORKER_TOKEN) {
       const controller = new AbortController()
@@ -17,7 +17,11 @@ export const handler: Handler = async (evt) => {
         const res = await fetch(`${GPU_WORKER_BASE_URL}/highlights`, {
           method: 'POST',
           headers: { 'content-type': 'application/json', authorization: `Bearer ${GPU_WORKER_TOKEN}` },
-          body: JSON.stringify({ assetId: body.assetId || 'demo', proxyUrl: body.proxyUrl || body.videoUrl }),
+          body: JSON.stringify({
+            assetId: body.assetId || 'demo',
+            proxyUrl: body.proxyUrl || body.videoUrl,
+            targetJersey: body.targetJersey,
+          }),
           signal: controller.signal,
         })
         if (!res.ok) return { statusCode: res.status, body: await res.text() }

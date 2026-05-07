@@ -74,6 +74,7 @@ class IngestResponse(BaseModel):
 class HighlightRequest(BaseModel):
     assetId: str
     proxyUrl: str
+    targetJersey: Optional[str] = None  # e.g. "23" — when set, GPT-4o reports per-scene bbox of that player
 
 
 class HighlightSegment(BaseModel):
@@ -86,6 +87,10 @@ class HighlightSegment(BaseModel):
     motion: float
     score: float
     clipDuration: float
+    jerseyNumbers: List[str] = []
+    # Normalized bbox (0-1) of the featured player in the scene's frame strip,
+    # if a target jersey is identifiable. Format: [cx, cy, w, h].
+    featuredBbox: Optional[List[float]] = None
 
 
 class HighlightResponse(BaseModel):
@@ -373,14 +378,23 @@ def _detect_persons_and_ball(frame):
 _OPENAI_ACTIONS = ("Dunk", "Three Pointer", "Layup", "Steal", "Block", "Assist", "Rebound", "Pass", "Foul", "Other")
 
 
-def _classify_action_openai(video_path: pathlib.Path, start: float, end: float) -> Optional[Tuple[str, float, str]]:
+def _classify_action_openai(
+    video_path: pathlib.Path,
+    start: float,
+    end: float,
+    target_jersey: Optional[str] = None,
+) -> Optional[Tuple[str, float, str, List[str], Optional[List[float]]]]:
     """
     GPT-4o vision classifier. Samples 5 frames evenly across the segment, composes
     a 1x5 grid (so the model sees temporal progression L→R), sends one Chat
-    Completions call with `detail: high`, and parses a strict-JSON response.
+    Completions call with `detail: high`, and parses a strict-JSON response that
+    also reports visible jersey numbers and (when `target_jersey` is given) the
+    normalized bbox of that player in the middle frame for reframe biasing.
 
-    Returns (action, confidence, descriptor) on success, or None on any error so
-    the caller can fall back to the YOLO+heuristic path.
+    Returns (action, confidence, descriptor, jerseyNumbers, featuredBbox) on
+    success, or None on any error so the caller can fall back to YOLO+heuristic.
+    `featuredBbox` is [cx, cy, w, h] in 0-1 units of the middle (3rd of 5) tile,
+    or None if target_jersey wasn't provided or wasn't visible.
     """
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
@@ -423,12 +437,18 @@ def _classify_action_openai(video_path: pathlib.Path, start: float, end: float) 
         strip.save(buf, format="JPEG", quality=85)
         b64 = base64.b64encode(buf.getvalue()).decode("ascii")
 
+        target_clause = (
+            f" If jersey number \"{target_jersey}\" is visible in the middle (3rd) frame, "
+            f"return featuredBbox as [cx, cy, w, h] normalized 0-1 of that tile (the body of the "
+            f"player wearing #{target_jersey}). Otherwise featuredBbox is null."
+        ) if target_jersey else " featuredBbox is always null."
+
         from openai import OpenAI
         client = OpenAI(api_key=api_key, timeout=15.0)
         completion = client.chat.completions.create(
             model="gpt-4o-2024-08-06",
             response_format={"type": "json_object"},
-            max_tokens=120,
+            max_tokens=200,
             messages=[
                 {
                     "role": "system",
@@ -437,8 +457,12 @@ def _classify_action_openai(video_path: pathlib.Path, start: float, end: float) 
                         "from a 1.2-3s clip, return strict JSON: "
                         '{"action": one of '
                         + ", ".join(f'"{a}"' for a in _OPENAI_ACTIONS)
-                        + ', "confidence": number 0-1, "descriptor": short ≤6-word phrase}. '
-                        "No prose, no markdown."
+                        + ', "confidence": number 0-1, "descriptor": short ≤6-word phrase, '
+                        '"jerseyNumbers": list of visible jersey number strings (e.g. ["23","11"]; '
+                        'omit numbers you cannot read with high confidence), '
+                        '"featuredBbox": null OR [cx, cy, w, h] all 0-1}.'
+                        + target_clause +
+                        " No prose, no markdown."
                     ),
                 },
                 {
@@ -467,20 +491,44 @@ def _classify_action_openai(video_path: pathlib.Path, start: float, end: float) 
             return None
         confidence = max(0.0, min(1.0, confidence))
         descriptor = str(data.get("descriptor", "")).strip()[:60] or f"{action} - AI detected"
-        return action, confidence, descriptor
+
+        # Parse jerseyNumbers — keep as strings so "07" ≠ "7" preserved verbatim
+        jerseys: List[str] = []
+        for j in (data.get("jerseyNumbers") or [])[:8]:
+            s = str(j).strip()
+            if s and s.isdigit() and len(s) <= 3:
+                jerseys.append(s)
+
+        # Parse featuredBbox — only when target_jersey was requested and bbox is well-formed
+        featured: Optional[List[float]] = None
+        bb = data.get("featuredBbox")
+        if target_jersey and isinstance(bb, list) and len(bb) == 4:
+            try:
+                featured = [max(0.0, min(1.0, float(v))) for v in bb]
+            except (TypeError, ValueError):
+                featured = None
+
+        return action, confidence, descriptor, jerseys, featured
     except Exception as e:
         print(f"[openai_vision] classify failed: {e}")
         return None
 
 
-def classify_action(video_path: pathlib.Path, start: float, end: float, motion: float, audio_peak: float) -> Tuple[str, float, Optional[str]]:
+def classify_action(
+    video_path: pathlib.Path,
+    start: float,
+    end: float,
+    motion: float,
+    audio_peak: float,
+    target_jersey: Optional[str] = None,
+) -> Tuple[str, float, Optional[str], List[str], Optional[List[float]]]:
     """
     Action classifier. Tries GPT-4o vision first when OPENAI_API_KEY is set;
     falls back to YOLOv8 person/ball detection + motion/audio heuristic on any
     error or when the key is absent.
 
-    Returns (action_name, confidence, descriptor). `descriptor` is None when the
-    YOLO fallback ran and the caller should synthesize a default.
+    Returns (action_name, confidence, descriptor, jerseyNumbers, featuredBbox).
+    The last two are [] / None when the YOLO fallback ran (no OCR in fallback).
 
     Heuristic mapping (no SlowFast model required at runtime):
       - Sustained vertical motion of person near ball + high motion + high audio  → Dunk
@@ -492,7 +540,7 @@ def classify_action(video_path: pathlib.Path, start: float, end: float, motion: 
     Returns: (action_name, confidence, descriptor)  — confidence in [0.55, 0.97]
     """
     # Try GPT-4o vision first; fall through silently on failure or missing key.
-    openai_result = _classify_action_openai(video_path, start, end)
+    openai_result = _classify_action_openai(video_path, start, end, target_jersey=target_jersey)
     if openai_result is not None:
         return openai_result
 
@@ -519,7 +567,7 @@ def classify_action(video_path: pathlib.Path, start: float, end: float, motion: 
         cap.release()
 
         if not per_frame:
-            return "Assist", 0.65, None
+            return "Assist", 0.65, None, [], None
 
         # Aggregate signals
         person_counts = [len(f["persons"]) for f in per_frame]
@@ -552,25 +600,25 @@ def classify_action(video_path: pathlib.Path, start: float, end: float, motion: 
 
         # Decision tree — calibrated to PRD action mix and ESPN highlight cadence
         if vertical_range > 0.18 and motion > 0.55 and audio_peak > 0.55:
-            return "Dunk", min(0.97, 0.78 + vertical_range * 0.6 + audio_peak * 0.1), None
+            return "Dunk", min(0.97, 0.78 + vertical_range * 0.6 + audio_peak * 0.1), None, [], None
         if vertical_range > 0.10 and motion > 0.50 and audio_peak > 0.50 and avg_persons >= 1.2:
-            return "Block", min(0.92, 0.72 + vertical_range * 0.5 + motion * 0.15), None
+            return "Block", min(0.92, 0.72 + vertical_range * 0.5 + motion * 0.15), None, [], None
         if contested >= max(1, len(per_frame) // 2) and lateral_range > 0.10:
-            return "Steal", min(0.90, 0.70 + lateral_range * 0.6 + audio_peak * 0.1), None
+            return "Steal", min(0.90, 0.70 + lateral_range * 0.6 + audio_peak * 0.1), None, [], None
         if ball_seen > 0.4 and lateral_range > 0.12 and 0.35 < motion < 0.75:
-            return "Three Pointer", min(0.93, 0.74 + lateral_range * 0.5 + audio_peak * 0.1), None
+            return "Three Pointer", min(0.93, 0.74 + lateral_range * 0.5 + audio_peak * 0.1), None, [], None
         if avg_persons >= 2.0 and ball_seen > 0.3 and motion >= 0.30:
-            return "Assist", min(0.88, 0.70 + min(0.12, contested * 0.04) + motion * 0.1), None
+            return "Assist", min(0.88, 0.70 + min(0.12, contested * 0.04) + motion * 0.1), None, [], None
 
         # Fallback grading by raw motion/audio
         score = 0.45 * motion + 0.35 * audio_peak + 0.20 * (avg_persons / 5.0)
         if score > 0.75:
-            return "Dunk", min(0.92, 0.70 + score * 0.2), None
+            return "Dunk", min(0.92, 0.70 + score * 0.2), None, [], None
         if score > 0.60:
-            return "Three Pointer", min(0.86, 0.70 + score * 0.15), None
+            return "Three Pointer", min(0.86, 0.70 + score * 0.15), None, [], None
         if score > 0.45:
-            return "Steal", min(0.82, 0.66 + score * 0.15), None
-        return "Assist", max(0.60, min(0.78, 0.60 + score * 0.2)), None
+            return "Steal", min(0.82, 0.66 + score * 0.15), None, [], None
+        return "Assist", max(0.60, min(0.78, 0.60 + score * 0.2)), None, [], None
 
     except Exception as e:
         print(f"[classify_action] error: {e}")
@@ -745,6 +793,8 @@ def score_highlights(detections: list, video_path: pathlib.Path, min_confidence:
             'motion': float(motion),
             'score': final_score,
             'descriptor': det.get('_descriptor') or f"{action} - AI detected",
+            'jerseyNumbers': list(det.get('_jerseys') or []),
+            'featuredBbox': det.get('_featuredBbox'),
         })
 
     # Sort by score descending
@@ -889,12 +939,13 @@ async def highlights(req: HighlightRequest, authorization: Optional[str] = Heade
                 # Compute motion + audio first to drive the classifier's heuristic priors
                 motion = compute_motion_intensity(video_path, scene['start'], scene['end'])
                 audio_peak = compute_audio_peak(video_path, scene['start'], scene['end'])
-                action, confidence, descriptor = classify_action(
+                action, confidence, descriptor, jerseys, featured_bbox = classify_action(
                     video_path,
                     scene['start'],
                     scene['end'],
                     motion=motion,
                     audio_peak=audio_peak,
+                    target_jersey=req.targetJersey,
                 )
 
                 detections.append({
@@ -907,6 +958,8 @@ async def highlights(req: HighlightRequest, authorization: Optional[str] = Heade
                     '_motion': motion,
                     '_audio': audio_peak,
                     '_descriptor': descriptor,
+                    '_jerseys': jerseys,
+                    '_featuredBbox': featured_bbox,
                 })
 
             # Step 4: Score highlights using PRD algorithm (re-uses precomputed motion/audio)
@@ -923,7 +976,9 @@ async def highlights(req: HighlightRequest, authorization: Optional[str] = Heade
                     audioPeak=seg['audioPeak'],
                     motion=seg['motion'],
                     score=seg['score'],
-                    clipDuration=seg['clipDuration']
+                    clipDuration=seg['clipDuration'],
+                    jerseyNumbers=seg.get('jerseyNumbers', []),
+                    featuredBbox=seg.get('featuredBbox'),
                 )
                 for seg in scored_segments
             ]
@@ -1149,6 +1204,21 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
             ov_block = OverlayMetadata(**((meta_block.get("overlay") or {})))
         except Exception:
             ov_block = OverlayMetadata()
+
+        # Player-focused mode: when the frontend sets `targetJersey`, auto-stamp
+        # a lower-third with that number + the highlight count if the user didn't
+        # already configure one. Counts come from the segments the frontend sent
+        # (post-filter), so this is the actual play count in the cut.
+        target_jersey = str(meta_block.get("targetJersey") or "").strip()
+        seg_count = len(meta_block.get("segments") or [])
+        if target_jersey and not ov_block.lowerThird:
+            ov_block.lowerThird = LowerThird(
+                name=f"#{target_jersey}",
+                team="",
+                number=target_jersey,
+                position=f"{seg_count} HIGHLIGHT{'S' if seg_count != 1 else ''}",
+                color="#FFB347",
+            )
 
         for p in req.presets:
             out_path = tmpdir / f"out-{p.presetId}.mp4"

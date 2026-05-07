@@ -49,6 +49,8 @@ export default function App() {
     setOverlayConfig,
     setInsights,
     setAssetInfo,
+    targetJersey,
+    setTargetJersey,
     uploadRunId,
     reset,
   } = useStudioState((state) => ({
@@ -86,6 +88,8 @@ export default function App() {
     setOverlayConfig: state.setOverlayConfig,
     setInsights: state.setInsights,
     setAssetInfo: state.setAssetInfo,
+    targetJersey: state.targetJersey,
+    setTargetJersey: state.setTargetJersey,
     uploadRunId: state.uploadRunId,
     reset: state.reset,
   }))
@@ -365,7 +369,10 @@ export default function App() {
           }
           return diff <= 0.3 ? best : t
         }
-        const segments = highlights.slice(0, 12).map((h) => {
+        const filteredHighlights = targetJersey
+          ? highlights.filter((h) => (h.jerseyNumbers || []).includes(targetJersey))
+          : highlights
+        const segments = filteredHighlights.slice(0, 12).map((h) => {
           const s0 = toSeconds(h.timestamp)
           const start = snap(s0)
           const end = Math.max(start + 0.8, start + (h.clipDuration || 2))
@@ -381,6 +388,7 @@ export default function App() {
             overlay: overlayConfig,
             trackUrl: selectedTrack?.previewUrl,
             segments,
+            targetJersey,
           },
         }
         const { jobId } = await api.startRenderJob(payload)
@@ -495,6 +503,8 @@ export default function App() {
             highlights={highlights}
             beatMarkers={beatMarkers}
             energyCurve={energyCurve}
+            targetJersey={targetJersey}
+            onTargetJerseyChange={setTargetJersey}
             onProceed={handleAdvanceFromAnalysis}
           />
         )

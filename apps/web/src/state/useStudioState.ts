@@ -7,13 +7,15 @@ export type TaskStatus = 'queued' | 'running' | 'done'
 export interface HighlightSegment {
   id: string
   timestamp: string
-  action: 'Dunk' | 'Three Pointer' | 'Steal' | 'Block' | 'Assist'
+  action: string  // GPT-4o can return any of 10 labels (Dunk, Three Pointer, Layup, Steal, Block, Assist, Rebound, Pass, Foul, Other) — string keeps the type honest
   descriptor: string
   confidence: number
   audioPeak: number
   motion: number
   score: number
   clipDuration: number
+  jerseyNumbers?: string[]
+  featuredBbox?: number[]  // [cx, cy, w, h] in 0-1 units of the middle frame
 }
 
 export interface BeatMarker {
@@ -99,6 +101,8 @@ export interface StudioState {
   processingProgress: number
   tasks: TaskLog[]
   highlights: HighlightSegment[]
+  /** When set, render filters to scenes featuring this jersey number. */
+  targetJersey?: string
   beatMarkers: BeatMarker[]
   energyCurve: number[]
   musicTracks: MusicTrack[]
@@ -120,6 +124,7 @@ export interface StudioState {
   setStageStatus: (stage: StageKey, status: StageStatus) => void
   setCurrentStage: (stage: StageKey) => void
   setHighlights: (segments: HighlightSegment[]) => void
+  setTargetJersey: (jersey: string | undefined) => void
   setBeatMarkers: (markers: BeatMarker[]) => void
   setEnergyCurve: (curve: number[]) => void
   setMusicTracks: (tracks: MusicTrack[]) => void
@@ -267,6 +272,7 @@ export const useStudioState = create<StudioState>((set) => ({
           export: 'pending',
         },
         highlights: [],
+        targetJersey: undefined,
         beatMarkers: [],
         energyCurve: [],
         musicTracks: [],
@@ -295,6 +301,7 @@ export const useStudioState = create<StudioState>((set) => ({
     })),
   setCurrentStage: (stage) => set({ currentStage: stage }),
   setHighlights: (segments) => set({ highlights: segments }),
+  setTargetJersey: (jersey) => set({ targetJersey: jersey }),
   setBeatMarkers: (markers) => set({ beatMarkers: markers }),
   setEnergyCurve: (curve) => set({ energyCurve: curve }),
   setMusicTracks: (tracks) => set({ musicTracks: tracks }),
