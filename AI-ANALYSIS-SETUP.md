@@ -120,13 +120,13 @@ STORAGE_ENDPOINT=https://us-east-1-xxxxx.upstash.io
 GPU_WORKER_BASE_URL=https://hoops-hype-studio-worker--fastapi-app.modal.run
 GPU_WORKER_TOKEN=a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6
 
-# Music provider (Pixabay)
-MUSIC_API_KEY=52760164-034d95ecfb007bf238562a15c
+# Music provider (Pixabay) — get a free key at pixabay.com/api/docs
+MUSIC_API_KEY=<your-pixabay-key>
 MUSIC_API_BASE_URL=https://pixabay.com/api
 
 # Redis (Upstash) for job/progress + rate limiting
-UPSTASH_REDIS_REST_URL=https://accurate-burro-24808.upstash.io
-UPSTASH_REDIS_REST_TOKEN=AWDoAAIncDJmNTdhYmVmOWJjZjE0MDczODRhYzdmOTIyYTAyNjQyYnAyMjQ4MDg
+UPSTASH_REDIS_REST_URL=<your-upstash-redis-url>
+UPSTASH_REDIS_REST_TOKEN=<your-upstash-redis-token>
 
 # Observability
 LOGTAIL_TOKEN=

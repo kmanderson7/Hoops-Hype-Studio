@@ -95,12 +95,12 @@ GPU_WORKER_BASE_URL=https://hoops-hype-studio-worker--fastapi-app.modal.run
 GPU_WORKER_TOKEN=$GPU_WORKER_TOKEN
 
 # Music provider (Pixabay)
-MUSIC_API_KEY=52760164-034d95ecfb007bf238562a15c
+MUSIC_API_KEY=
 MUSIC_API_BASE_URL=https://pixabay.com/api
 
 # Redis (Upstash) for job/progress + rate limiting
-UPSTASH_REDIS_REST_URL=https://accurate-burro-24808.upstash.io
-UPSTASH_REDIS_REST_TOKEN=AWDoAAIncDJmNTdhYmVmOWJjZjE0MDczODRhYzdmOTIyYTAyNjQyYnAyMjQ4MDg
+UPSTASH_REDIS_REST_URL=
+UPSTASH_REDIS_REST_TOKEN=
 
 # Observability
 LOGTAIL_TOKEN=

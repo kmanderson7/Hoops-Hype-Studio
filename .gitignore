@@ -3,6 +3,7 @@ dist
 .DS_Store
 .env
 .env.*
+!.env.example
 netlify/functions-serve
 netlify/.netlify
 .netlify
