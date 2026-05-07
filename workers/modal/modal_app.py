@@ -30,7 +30,7 @@ app = modal.App("hoops-hype-studio-worker")
 
 # Base image with ffmpeg and Python libs commonly needed for ML/audio/video
 image = (
-    modal.Image.debian_slim()
+    modal.Image.debian_slim(python_version="3.11")
     .apt_install("ffmpeg", "libgl1-mesa-glx", "libglib2.0-0", "libsm6", "libxext6", "libxrender-dev")
     .pip_install(
         "fastapi==0.115.2",
