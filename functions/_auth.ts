@@ -20,6 +20,14 @@ async function redisSetEx(key: string, val: string, ttlSec: number): Promise<boo
   return res.ok
 }
 
+async function redisDel(key: string): Promise<boolean> {
+  if (!REDIS_URL || !REDIS_TOKEN) return false
+  const res = await fetch(`${REDIS_URL}/DEL/${encodeURIComponent(key)}`, {
+    headers: { Authorization: `Bearer ${REDIS_TOKEN}` },
+  })
+  return res.ok
+}
+
 function hmacHex(secret: string, data: string) {
   const enc = new TextEncoder()
   const key = enc.encode(secret)
@@ -78,5 +86,10 @@ export async function setRenderLock(ip: string, jobId: string, ttlSec = 900) {
   if (!REDIS_URL || !REDIS_TOKEN) return false
   const key = `render:active:${ip}`
   return await redisSetEx(key, jobId, ttlSec)
+}
+
+export async function clearRenderLock(ip: string) {
+  if (!ip) return false
+  return await redisDel(`render:active:${ip}`)
 }
 

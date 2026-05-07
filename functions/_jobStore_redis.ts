@@ -9,6 +9,7 @@ export interface RenderJob {
   durationMs: number
   status: JobStatus
   downloads?: { presetId: string; url: string; expiresAt: string }[]
+  error?: string
 }
 
 const base = process.env.UPSTASH_REDIS_REST_URL || ''
@@ -63,6 +64,10 @@ export async function getRenderJobStatus(id: string): Promise<{
 } | undefined> {
   const job = await getRenderJob(id)
   if (!job) return undefined
+  if (job.status === 'error') {
+    const presets = job.presets.map((p) => ({ presetId: p, progress: 0 }))
+    return { status: 'error', progress: 0, presets }
+  }
   const elapsed = Date.now() - job.createdAt
   const ratio = Math.max(0, Math.min(1, elapsed / job.durationMs))
   const progress = Math.round(ratio * 100)
@@ -81,6 +86,14 @@ export async function setRenderJobDownloads(id: string, outputs: { presetId: str
   if (!job) return
   const exp = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
   job.downloads = outputs.map((o) => ({ ...o, expiresAt: exp }))
+  await setRenderJob(job)
+}
+
+export async function setRenderJobError(id: string, error?: string) {
+  const job = await getRenderJob(id)
+  if (!job) return
+  job.status = 'error'
+  if (error) job.error = error
   await setRenderJob(job)
 }
 

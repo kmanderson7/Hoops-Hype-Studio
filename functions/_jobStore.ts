@@ -16,6 +16,8 @@ export interface RenderJob {
   status: JobStatus
   // populated when done
   downloads?: { presetId: string; url: string; expiresAt: string }[]
+  // populated when the worker fails — short message for surfacing in UI/logs
+  error?: string
 }
 
 const jobs = new Map<string, RenderJob>()
@@ -74,6 +76,11 @@ export function getRenderJobStatus(id: string): {
   const job = jobs.get(id)
   if (!job) return undefined
 
+  if (job.status === 'error') {
+    const presets = job.presets.map((presetId) => ({ presetId, progress: 0 }))
+    return { status: 'error', progress: 0, presets }
+  }
+
   const elapsed = Date.now() - job.createdAt
   const ratio = Math.max(0, Math.min(1, elapsed / job.durationMs))
   const progress = Math.round(ratio * 100)
@@ -110,5 +117,17 @@ export function setRenderJobDownloads(id: string, outputs: { presetId: string; u
   if (!job) return
   const exp = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
   job.downloads = outputs.map((o) => ({ presetId: o.presetId, url: o.url, expiresAt: exp }))
+  jobs.set(id, job)
+}
+
+export function setRenderJobError(id: string, error?: string) {
+  if (useRedis && redisStore?.setRenderJobError) {
+    // @ts-expect-error
+    return redisStore.setRenderJobError(id, error)
+  }
+  const job = jobs.get(id)
+  if (!job) return
+  job.status = 'error'
+  if (error) job.error = error
   jobs.set(id, job)
 }

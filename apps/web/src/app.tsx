@@ -510,8 +510,18 @@ export default function App() {
           }
         }, 800)
         renderTimers.current.push(poll)
-      } catch (e) {
-        setRenderStatus(`Failed to start render: ${e}`)
+      } catch (e: any) {
+        let msg = `Failed to start render: ${e}`
+        const raw = typeof e?.message === 'string' ? e.message : ''
+        try {
+          const parsed = JSON.parse(raw)
+          if (parsed?.detail === 'RENDER_CONCURRENCY_LIMIT') {
+            msg = 'You already have a render in progress. Please wait for it to finish, or check the export panel below.'
+          } else if (parsed?.title) {
+            msg = `Failed to start render: ${parsed.title}${parsed.detail ? ` (${parsed.detail})` : ''}`
+          }
+        } catch {}
+        setRenderStatus(msg)
         setIsRendering(false)
       }
     })()

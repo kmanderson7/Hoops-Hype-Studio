@@ -1,6 +1,6 @@
 import type { Handler } from '@netlify/functions'
 import { createRenderJob } from './_jobStore'
-import { requireHmacNonce, checkRenderConcurrency, setRenderLock } from './_auth'
+import { requireHmacNonce, checkRenderConcurrency, setRenderLock, clearRenderLock } from './_auth'
 import { log, captureException } from './_obs'
 
 const { GPU_WORKER_BASE_URL = '', GPU_WORKER_TOKEN = '', URL: SITE_URL = '' } = process.env
@@ -44,6 +44,7 @@ export const handler: Handler = async (evt) => {
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
             jobId: job.id,
+            ip,
             assetId: body.assetId,
             trackUrl: body.metadata && (body.metadata as any).trackUrl,
             presets: presetIds.map((p) => ({ presetId: p })),
@@ -51,14 +52,17 @@ export const handler: Handler = async (evt) => {
           }),
         })
       } catch (e: any) {
-        // Don't fail the whole request if the kickoff fetch errors — the job
-        // record still exists and the frontend will simply never see downloads.
+        // Kickoff failed — the bg fn will never run, so release the lock now
+        // so the user isn't stuck for 15 minutes on a job that never dispatched.
+        if (ip) await clearRenderLock(ip)
         await captureException(e, { where: 'startRenderJob:bg_kickoff' })
       }
     }
 
     return { statusCode: 200, body: JSON.stringify({ renderJobId: job.id, jobId: job.id }) }
   } catch (e: any) {
+    const ip = (evt.headers['x-forwarded-for'] as string) || ''
+    if (ip) await clearRenderLock(ip).catch(() => {})
     await captureException(e, { where: 'startRenderJob' })
     return { statusCode: 500, body: JSON.stringify({ title: 'Server error', detail: e?.message || String(e) }) }
   }

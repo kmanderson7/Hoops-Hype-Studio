@@ -1,5 +1,6 @@
 import type { Handler } from '@netlify/functions'
-import { setRenderJobDownloads } from './_jobStore'
+import { setRenderJobDownloads, setRenderJobError } from './_jobStore'
+import { clearRenderLock } from './_auth'
 import { log, captureException } from './_obs'
 
 const { GPU_WORKER_BASE_URL = '', GPU_WORKER_TOKEN = '' } = process.env
@@ -18,19 +19,29 @@ const { GPU_WORKER_BASE_URL = '', GPU_WORKER_TOKEN = '' } = process.env
  * their response body is ignored. Don't put user-facing data here.
  */
 export const handler: Handler = async (evt) => {
+  const body = (() => {
+    try {
+      return JSON.parse(evt.body || '{}') as {
+        jobId?: string
+        ip?: string
+        assetId?: string
+        trackUrl?: string
+        presets?: { presetId: string }[]
+        metadata?: Record<string, unknown>
+      }
+    } catch {
+      return {} as any
+    }
+  })()
+  const ip = body.ip || ''
+
   try {
     if (!GPU_WORKER_BASE_URL || !GPU_WORKER_TOKEN) {
       await log({ level: 'warn', msg: 'render_background_no_worker' })
+      if (body.jobId) await (setRenderJobError as any)(body.jobId, 'no_worker_configured')
       return { statusCode: 200, body: '' }
     }
 
-    const body = JSON.parse(evt.body || '{}') as {
-      jobId?: string
-      assetId?: string
-      trackUrl?: string
-      presets?: { presetId: string }[]
-      metadata?: Record<string, unknown>
-    }
     if (!body.jobId) {
       await log({ level: 'error', msg: 'render_background_no_job_id' })
       return { statusCode: 200, body: '' }
@@ -57,6 +68,7 @@ export const handler: Handler = async (evt) => {
     if (!res.ok) {
       const errText = await res.text().catch(() => '')
       await log({ level: 'error', msg: 'render_background_modal_error', jobId: body.jobId, status: res.status, detail: errText.slice(0, 500) })
+      await (setRenderJobError as any)(body.jobId, `modal_${res.status}`)
       return { statusCode: 200, body: '' }
     }
 
@@ -66,10 +78,16 @@ export const handler: Handler = async (evt) => {
       await log({ level: 'info', msg: 'render_background_done', jobId: body.jobId, count: data.outputs.length })
     } else {
       await log({ level: 'warn', msg: 'render_background_no_outputs', jobId: body.jobId })
+      await (setRenderJobError as any)(body.jobId, 'no_outputs')
     }
     return { statusCode: 200, body: '' }
   } catch (e: any) {
     await captureException(e, { where: 'runRender-background' })
+    if (body.jobId) await (setRenderJobError as any)(body.jobId, e?.message || 'exception').catch(() => {})
     return { statusCode: 200, body: '' }
+  } finally {
+    // Always release the per-IP render lock so the user can start another
+    // render once this one ends — success, Modal failure, or exception.
+    if (ip) await clearRenderLock(ip).catch(() => {})
   }
 }
