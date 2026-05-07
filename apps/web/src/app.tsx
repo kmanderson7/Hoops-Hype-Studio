@@ -473,6 +473,7 @@ export default function App() {
         const poll = window.setInterval(async () => {
           try {
             const status = await api.getJobStatus({ jobId })
+            console.debug('[render-poll]', { jobId, ...status })
             if (status.progress != null) progress = Math.max(progress, status.progress)
             const presetProgress = (status as any).presets as { presetId: string; progress: number }[] | undefined
             if (presetProgress && Array.isArray(presetProgress)) {
@@ -513,7 +514,7 @@ export default function App() {
               window.clearInterval(poll)
             } else {
               progress = Math.min(98, progress + 8)
-              setRenderStatus(`Rendering... ${progress}%`)
+              setRenderStatus(`Rendering... ${progress}% — ${jobId.slice(-8)}`)
             }
           } catch (e) {
             setRenderStatus(`Render polling error: ${e}`)
