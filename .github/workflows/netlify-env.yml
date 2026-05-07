@@ -45,7 +45,7 @@ jobs:
             val="$2"
             if [ -n "$val" ]; then
               echo "Setting $key"
-              netlify env:set "$key" "$val" --site "$NETLIFY_SITE_ID"
+              netlify env:set "$key" "$val" --site "$NETLIFY_SITE_ID" --filter web --force
             else
               echo "Skipping $key (empty)"
             fi
