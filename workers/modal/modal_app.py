@@ -49,6 +49,7 @@ image = (
         "scikit-image==0.22.0",
         "ultralytics==8.0.200",  # YOLOv8 for object detection
         "scenedetect[opencv]==0.6.2",  # Scene detection
+        "openai==1.50.0",  # GPT-4o vision for highlight classification
     )
 )
 
@@ -369,9 +370,117 @@ def _detect_persons_and_ball(frame):
         return [], []
 
 
-def classify_action(video_path: pathlib.Path, start: float, end: float, motion: float, audio_peak: float) -> Tuple[str, float]:
+_OPENAI_ACTIONS = ("Dunk", "Three Pointer", "Layup", "Steal", "Block", "Assist", "Rebound", "Pass", "Foul", "Other")
+
+
+def _classify_action_openai(video_path: pathlib.Path, start: float, end: float) -> Optional[Tuple[str, float, str]]:
     """
-    Action classifier using YOLOv8 person/ball detection + motion + audio cues.
+    GPT-4o vision classifier. Samples 5 frames evenly across the segment, composes
+    a 1x5 grid (so the model sees temporal progression L→R), sends one Chat
+    Completions call with `detail: high`, and parses a strict-JSON response.
+
+    Returns (action, confidence, descriptor) on success, or None on any error so
+    the caller can fall back to the YOLO+heuristic path.
+    """
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        return None
+
+    import base64
+    import io
+    import json
+    import cv2
+    import numpy as np
+    from PIL import Image
+
+    try:
+        cap = cv2.VideoCapture(str(video_path))
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        sample_count = 5
+        ts = np.linspace(start, end, sample_count + 2)[1:-1]
+        frames: List[Image.Image] = []
+        for t in ts:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, int(t * fps))
+            ret, frame = cap.read()
+            if not ret:
+                continue
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frames.append(Image.fromarray(rgb))
+        cap.release()
+
+        if not frames:
+            return None
+
+        # Compose 1x5 strip at a max tile width of 384px (keeps the upload small
+        # while still resolving player/ball detail under detail:high).
+        tile_w = 384
+        tiles = [f.resize((tile_w, int(f.height * tile_w / f.width))) for f in frames]
+        strip_h = max(t.height for t in tiles)
+        strip = Image.new("RGB", (tile_w * len(tiles), strip_h), (0, 0, 0))
+        for i, t in enumerate(tiles):
+            strip.paste(t, (i * tile_w, 0))
+        buf = io.BytesIO()
+        strip.save(buf, format="JPEG", quality=85)
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key, timeout=15.0)
+        completion = client.chat.completions.create(
+            model="gpt-4o-2024-08-06",
+            response_format={"type": "json_object"},
+            max_tokens=120,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You score basketball clip highlights. Given 5 frames sampled left-to-right "
+                        "from a 1.2-3s clip, return strict JSON: "
+                        '{"action": one of '
+                        + ", ".join(f'"{a}"' for a in _OPENAI_ACTIONS)
+                        + ', "confidence": number 0-1, "descriptor": short ≤6-word phrase}. '
+                        "No prose, no markdown."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Classify this basketball play."},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{b64}",
+                                "detail": "high",
+                            },
+                        },
+                    ],
+                },
+            ],
+        )
+        raw = completion.choices[0].message.content or ""
+        data = json.loads(raw)
+        action = str(data.get("action", "")).strip()
+        if action not in _OPENAI_ACTIONS:
+            return None
+        try:
+            confidence = float(data.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            return None
+        confidence = max(0.0, min(1.0, confidence))
+        descriptor = str(data.get("descriptor", "")).strip()[:60] or f"{action} - AI detected"
+        return action, confidence, descriptor
+    except Exception as e:
+        print(f"[openai_vision] classify failed: {e}")
+        return None
+
+
+def classify_action(video_path: pathlib.Path, start: float, end: float, motion: float, audio_peak: float) -> Tuple[str, float, Optional[str]]:
+    """
+    Action classifier. Tries GPT-4o vision first when OPENAI_API_KEY is set;
+    falls back to YOLOv8 person/ball detection + motion/audio heuristic on any
+    error or when the key is absent.
+
+    Returns (action_name, confidence, descriptor). `descriptor` is None when the
+    YOLO fallback ran and the caller should synthesize a default.
 
     Heuristic mapping (no SlowFast model required at runtime):
       - Sustained vertical motion of person near ball + high motion + high audio  → Dunk
@@ -380,8 +489,13 @@ def classify_action(video_path: pathlib.Path, start: float, end: float, motion: 
       - Person reaches above ball trajectory + high motion + audio peak          → Block
       - Person-ball-person handoff (≥2 persons close to ball) + medium motion    → Assist
 
-    Returns: (action_name, confidence)  — confidence in [0.55, 0.97]
+    Returns: (action_name, confidence, descriptor)  — confidence in [0.55, 0.97]
     """
+    # Try GPT-4o vision first; fall through silently on failure or missing key.
+    openai_result = _classify_action_openai(video_path, start, end)
+    if openai_result is not None:
+        return openai_result
+
     import cv2
     import numpy as np
 
@@ -405,7 +519,7 @@ def classify_action(video_path: pathlib.Path, start: float, end: float, motion: 
         cap.release()
 
         if not per_frame:
-            return "Assist", 0.65
+            return "Assist", 0.65, None
 
         # Aggregate signals
         person_counts = [len(f["persons"]) for f in per_frame]
@@ -438,29 +552,29 @@ def classify_action(video_path: pathlib.Path, start: float, end: float, motion: 
 
         # Decision tree — calibrated to PRD action mix and ESPN highlight cadence
         if vertical_range > 0.18 and motion > 0.55 and audio_peak > 0.55:
-            return "Dunk", min(0.97, 0.78 + vertical_range * 0.6 + audio_peak * 0.1)
+            return "Dunk", min(0.97, 0.78 + vertical_range * 0.6 + audio_peak * 0.1), None
         if vertical_range > 0.10 and motion > 0.50 and audio_peak > 0.50 and avg_persons >= 1.2:
-            return "Block", min(0.92, 0.72 + vertical_range * 0.5 + motion * 0.15)
+            return "Block", min(0.92, 0.72 + vertical_range * 0.5 + motion * 0.15), None
         if contested >= max(1, len(per_frame) // 2) and lateral_range > 0.10:
-            return "Steal", min(0.90, 0.70 + lateral_range * 0.6 + audio_peak * 0.1)
+            return "Steal", min(0.90, 0.70 + lateral_range * 0.6 + audio_peak * 0.1), None
         if ball_seen > 0.4 and lateral_range > 0.12 and 0.35 < motion < 0.75:
-            return "Three Pointer", min(0.93, 0.74 + lateral_range * 0.5 + audio_peak * 0.1)
+            return "Three Pointer", min(0.93, 0.74 + lateral_range * 0.5 + audio_peak * 0.1), None
         if avg_persons >= 2.0 and ball_seen > 0.3 and motion >= 0.30:
-            return "Assist", min(0.88, 0.70 + min(0.12, contested * 0.04) + motion * 0.1)
+            return "Assist", min(0.88, 0.70 + min(0.12, contested * 0.04) + motion * 0.1), None
 
         # Fallback grading by raw motion/audio
         score = 0.45 * motion + 0.35 * audio_peak + 0.20 * (avg_persons / 5.0)
         if score > 0.75:
-            return "Dunk", min(0.92, 0.70 + score * 0.2)
+            return "Dunk", min(0.92, 0.70 + score * 0.2), None
         if score > 0.60:
-            return "Three Pointer", min(0.86, 0.70 + score * 0.15)
+            return "Three Pointer", min(0.86, 0.70 + score * 0.15), None
         if score > 0.45:
-            return "Steal", min(0.82, 0.66 + score * 0.15)
-        return "Assist", max(0.60, min(0.78, 0.60 + score * 0.2))
+            return "Steal", min(0.82, 0.66 + score * 0.15), None
+        return "Assist", max(0.60, min(0.78, 0.60 + score * 0.2)), None
 
     except Exception as e:
         print(f"[classify_action] error: {e}")
-        return "Assist", 0.65
+        return "Assist", 0.65, None
 
 
 def compute_subject_track(video_path: pathlib.Path, start: float, end: float, sample_fps: float = 4.0) -> List[Tuple[float, float, float]]:
@@ -630,7 +744,7 @@ def score_highlights(detections: list, video_path: pathlib.Path, min_confidence:
             'audioPeak': float(audio_peak),
             'motion': float(motion),
             'score': final_score,
-            'descriptor': f"{action} - AI detected",
+            'descriptor': det.get('_descriptor') or f"{action} - AI detected",
         })
 
     # Sort by score descending
@@ -775,7 +889,7 @@ async def highlights(req: HighlightRequest, authorization: Optional[str] = Heade
                 # Compute motion + audio first to drive the classifier's heuristic priors
                 motion = compute_motion_intensity(video_path, scene['start'], scene['end'])
                 audio_peak = compute_audio_peak(video_path, scene['start'], scene['end'])
-                action, confidence = classify_action(
+                action, confidence, descriptor = classify_action(
                     video_path,
                     scene['start'],
                     scene['end'],
@@ -792,6 +906,7 @@ async def highlights(req: HighlightRequest, authorization: Optional[str] = Heade
                     'clipDuration': scene['duration'],
                     '_motion': motion,
                     '_audio': audio_peak,
+                    '_descriptor': descriptor,
                 })
 
             # Step 4: Score highlights using PRD algorithm (re-uses precomputed motion/audio)
