@@ -625,16 +625,26 @@ def classify_action(
         return "Assist", 0.65, None
 
 
-def compute_subject_track(video_path: pathlib.Path, start: float, end: float, sample_fps: float = 4.0) -> List[Tuple[float, float, float]]:
+def compute_subject_track(
+    video_path: pathlib.Path,
+    start: float,
+    end: float,
+    sample_fps: float = 4.0,
+    seed_bbox: Optional[List[float]] = None,
+) -> List[Tuple[float, float, float]]:
     """
     Sample person/ball positions across a segment to drive auto-reframe.
     Returns list of (t_seconds_from_start, cx_norm, cy_norm) where cx/cy are the
     weighted center-of-attention in normalized [0,1] coordinates of the source frame.
 
-    Heuristic weighting:
-      - Ball center contributes 60% if visible
-      - Highest-confidence person contributes 40%
-      - If neither found, falls back to (0.5, 0.5)
+    Two modes:
+      - Default (seed_bbox=None): ball-weighted highest-confidence person.
+        Ball contributes 60%, top person 40%. Fallback (0.5, 0.5).
+      - Player-locked (seed_bbox=[cx, cy, w, h]): tracker-style. Initial
+        anchor = seed_bbox center. Per frame, pick the YOLO person whose
+        center is closest to the running anchor; update the anchor to that
+        person's center for the next frame. If no persons detected, hold
+        the last anchor (no jumping back to ball/center).
     """
     import cv2
     import numpy as np
@@ -645,6 +655,16 @@ def compute_subject_track(video_path: pathlib.Path, start: float, end: float, sa
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
         duration = max(0.1, end - start)
         n_samples = max(2, int(duration * sample_fps))
+
+        # Initialize the running anchor (player-locked mode only)
+        anchor_x: Optional[float] = None
+        anchor_y: Optional[float] = None
+        if seed_bbox and len(seed_bbox) >= 2:
+            try:
+                anchor_x = float(seed_bbox[0])
+                anchor_y = float(seed_bbox[1])
+            except (TypeError, ValueError):
+                anchor_x = anchor_y = None
 
         for i in range(n_samples):
             t = start + (i / max(1, n_samples - 1)) * duration
@@ -657,7 +677,26 @@ def compute_subject_track(video_path: pathlib.Path, start: float, end: float, sa
 
             cx_norm = 0.5
             cy_norm = 0.5
-            if balls:
+
+            if anchor_x is not None and anchor_y is not None:
+                # Player-locked: pick the person whose normalized center is
+                # closest to the running anchor. Update anchor for next frame.
+                if persons:
+                    def _dist(pp):
+                        ncx = pp["cx"] / max(1, w)
+                        ncy = pp["cy"] / max(1, h)
+                        return (ncx - anchor_x) ** 2 + (ncy - anchor_y) ** 2
+                    p = min(persons, key=_dist)
+                    cx_norm = p["cx"] / max(1, w)
+                    cy_norm = p["cy"] / max(1, h)
+                    # Update running anchor
+                    anchor_x = cx_norm
+                    anchor_y = cy_norm
+                else:
+                    # No detection — hold last anchor
+                    cx_norm = anchor_x
+                    cy_norm = anchor_y
+            elif balls:
                 bx, by, _ = max(balls, key=lambda b: b[2])
                 if persons:
                     p = max(persons, key=lambda pp: pp["conf"])
@@ -1092,9 +1131,17 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
                     if d < 0.5:
                         continue
 
-                    # Subject-track this segment for downstream reframe (vertical/4:5)
+                    # Subject-track this segment for downstream reframe (vertical/4:5).
+                    # If the frontend included a `bbox` for player-locked mode,
+                    # use it as the tracker seed so the average locks onto the
+                    # target player rather than the ball-weighted center of action.
+                    seg_bbox = seg.get("bbox") if isinstance(seg, dict) else None
+                    if not (isinstance(seg_bbox, list) and len(seg_bbox) >= 2):
+                        seg_bbox = None
                     try:
-                        track_pts = compute_subject_track(src_path, start, end, sample_fps=3.0)
+                        track_pts = compute_subject_track(
+                            src_path, start, end, sample_fps=3.0, seed_bbox=seg_bbox
+                        )
                         if track_pts:
                             seg_subject_x.append(float(sum(p[1] for p in track_pts) / len(track_pts)))
                         else:

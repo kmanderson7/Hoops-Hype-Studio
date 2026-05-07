@@ -13,6 +13,8 @@ interface AnalysisStageProps {
   energyCurve: number[]
   targetJersey?: string
   onTargetJerseyChange?: (jersey: string | undefined) => void
+  onLockTracking?: () => void
+  isLockingTracking?: boolean
   onProceed?: () => void
 }
 
@@ -24,6 +26,8 @@ export function AnalysisStage({
   energyCurve,
   targetJersey,
   onTargetJerseyChange,
+  onLockTracking,
+  isLockingTracking,
   onProceed,
 }: AnalysisStageProps) {
   // Tally how many scenes each detected jersey appears in
@@ -44,6 +48,13 @@ export function AnalysisStage({
   }, [highlights, targetJersey])
 
   const [customJersey, setCustomJersey] = useState('')
+
+  // True once at least one visible highlight has a bbox — i.e. the user has
+  // already locked tracking for the selected jersey. Used to label the button.
+  const trackingLocked = useMemo(() => {
+    if (!targetJersey) return false
+    return visibleHighlights.some((h) => h.featuredBbox && h.featuredBbox.length >= 2)
+  }, [targetJersey, visibleHighlights])
 
   return (
     <section className="space-y-6">
@@ -178,6 +189,28 @@ export function AnalysisStage({
               Apply
             </button>
           </form>
+
+          {targetJersey && onLockTracking && (
+            <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-amber-400/10 pt-4">
+              <button
+                type="button"
+                onClick={onLockTracking}
+                disabled={isLockingTracking}
+                className="rounded-full border border-amber-400/60 bg-amber-400/20 px-4 py-1.5 text-xs font-semibold text-amber-100 transition hover:bg-amber-400/30 disabled:cursor-wait disabled:opacity-60"
+              >
+                {isLockingTracking
+                  ? `Analyzing #${targetJersey}…`
+                  : trackingLocked
+                  ? `Re-lock tracking on #${targetJersey}`
+                  : `Lock tracking on #${targetJersey}`}
+              </button>
+              <p className="max-w-md text-[11px] text-slate-400">
+                {trackingLocked
+                  ? `Reframe is following #${targetJersey} per scene. Re-lock if you change jersey selection.`
+                  : `Re-runs AI on each scene to find #${targetJersey} and bias the auto-reframe so the crop follows that player. Adds ~10s per scene.`}
+              </p>
+            </div>
+          )}
         </div>
       )}
 

@@ -308,6 +308,44 @@ export default function App() {
     setCurrentStage('music')
   }
 
+  // "Lock tracking" — re-runs /highlights with the chosen jersey so GPT-4o
+  // returns per-scene bboxes for that player. Merges bboxes into existing
+  // highlights so the user keeps their list/order; segments where the player
+  // wasn't found get no bbox and fall back to ball-weighted reframe.
+  const [isLockingTracking, setIsLockingTracking] = useState(false)
+  const handleLockTracking = async () => {
+    if (!targetJersey || !assetId) return
+    setIsLockingTracking(true)
+    try {
+      const hi = await api.detectHighlights({
+        assetId,
+        proxyUrl: proxyUrlRef.current,
+        videoUrl: proxyUrlRef.current || fileInfo?.previewUrl,
+        targetJersey,
+      })
+      const segs = (hi as any).segments || []
+      // Index incoming bboxes by id, fall back to timestamp+action match
+      const bboxById = new Map<string, number[]>()
+      const bboxByTs = new Map<string, number[]>()
+      for (const s of segs) {
+        if (s?.featuredBbox && Array.isArray(s.featuredBbox) && s.featuredBbox.length >= 2) {
+          if (s.id) bboxById.set(String(s.id), s.featuredBbox)
+          if (s.timestamp && s.action) bboxByTs.set(`${s.timestamp}|${s.action}`, s.featuredBbox)
+        }
+      }
+      const merged = highlights.map((h) => {
+        const next = bboxById.get(h.id) || bboxByTs.get(`${h.timestamp}|${h.action}`)
+        return next ? { ...h, featuredBbox: next } : h
+      })
+      setHighlights(merged)
+      setRenderStatus(`Tracking locked on #${targetJersey}.`)
+    } catch (e: any) {
+      setRenderStatus(`Lock tracking failed: ${e?.message || e}`)
+    } finally {
+      setIsLockingTracking(false)
+    }
+  }
+
   const handleSelectTrack = (trackId: string) => {
     selectTrack(trackId)
   }
@@ -377,7 +415,12 @@ export default function App() {
           const start = snap(s0)
           const end = Math.max(start + 0.8, start + (h.clipDuration || 2))
           const impact = Math.min(end, start + Math.min(0.3, (h.clipDuration || 2) / 2))
-          return { start, end, impact }
+          // Forward the per-scene bbox when present so the worker can seed
+          // its subject tracker on the target player instead of the ball.
+          const bbox = targetJersey && h.featuredBbox && h.featuredBbox.length >= 2
+            ? h.featuredBbox
+            : undefined
+          return bbox ? { start, end, impact, bbox } : { start, end, impact }
         })
 
         const payload = {
@@ -505,6 +548,8 @@ export default function App() {
             energyCurve={energyCurve}
             targetJersey={targetJersey}
             onTargetJerseyChange={setTargetJersey}
+            onLockTracking={handleLockTracking}
+            isLockingTracking={isLockingTracking}
             onProceed={handleAdvanceFromAnalysis}
           />
         )
