@@ -68,6 +68,7 @@ export function getRenderJobStatus(id: string): {
   eta?: number
   presets: RenderPresetProgress[]
   downloads?: { presetId: string; url: string; expiresAt: string }[]
+  error?: string
 } | undefined {
   if (useRedis && redisStore?.getRenderJobStatus) {
     // @ts-expect-error
@@ -78,7 +79,7 @@ export function getRenderJobStatus(id: string): {
 
   if (job.status === 'error') {
     const presets = job.presets.map((presetId) => ({ presetId, progress: 0 }))
-    return { status: 'error', progress: 0, presets }
+    return { status: 'error', progress: 0, presets, error: job.error }
   }
 
   const elapsed = Date.now() - job.createdAt

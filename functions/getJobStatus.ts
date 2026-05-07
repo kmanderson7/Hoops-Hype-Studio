@@ -25,6 +25,7 @@ export const handler: Handler = async (evt) => {
         progress: state.progress,
         eta: state.eta,
         presets: state.presets,
+        error: state.error,
         payload,
       }),
     }

@@ -497,7 +497,18 @@ export default function App() {
               setIsRendering(false)
               window.clearInterval(poll)
             } else if (status.status === 'error') {
-              setRenderStatus('Render failed. Please retry.')
+              const reason = (status as any).error as string | undefined
+              const friendly =
+                reason === 'modal_timeout'
+                  ? 'Render timed out — the GPU worker took too long to respond. Please retry.'
+                  : reason === 'no_outputs'
+                    ? 'Render failed — the worker returned no files (likely an ffmpeg or storage error). Please retry.'
+                    : reason === 'no_worker_configured'
+                      ? 'Render failed — GPU worker is not configured on the server.'
+                      : reason && reason.startsWith('modal_')
+                        ? `Render failed (worker error ${reason.replace('modal_', '')}). Please retry.`
+                        : 'Render failed. Please retry.'
+              setRenderStatus(friendly)
               setIsRendering(false)
               window.clearInterval(poll)
             } else {

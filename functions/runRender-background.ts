@@ -49,21 +49,36 @@ export const handler: Handler = async (evt) => {
 
     await log({ level: 'info', msg: 'render_background_start', jobId: body.jobId })
 
-    // No timeout on this fetch — background functions run up to 15 min,
-    // and Modal /render typically completes in 30-180s for typical clips.
-    const res = await fetch(`${GPU_WORKER_BASE_URL}/render`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${GPU_WORKER_TOKEN}`,
-      },
-      body: JSON.stringify({
-        assetId: body.assetId,
-        trackUrl: body.trackUrl,
-        presets: body.presets || [],
-        metadata: body.metadata || {},
-      }),
-    })
+    // Hard cap on Modal /render so a hung worker can't sit silently for the
+    // full 15-min bg fn lifetime — the client would be stuck at 98% the whole
+    // time. Typical renders finish in 30-180s; 6 min is generous headroom.
+    const RENDER_TIMEOUT_MS = 6 * 60 * 1000
+    const ac = new AbortController()
+    const timer = setTimeout(() => ac.abort(), RENDER_TIMEOUT_MS)
+    let res: Response
+    try {
+      res = await fetch(`${GPU_WORKER_BASE_URL}/render`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${GPU_WORKER_TOKEN}`,
+        },
+        body: JSON.stringify({
+          assetId: body.assetId,
+          trackUrl: body.trackUrl,
+          presets: body.presets || [],
+          metadata: body.metadata || {},
+        }),
+        signal: ac.signal,
+      })
+    } catch (e: any) {
+      const aborted = e?.name === 'AbortError'
+      await log({ level: 'error', msg: aborted ? 'render_background_modal_timeout' : 'render_background_fetch_error', jobId: body.jobId, detail: e?.message || String(e) })
+      await (setRenderJobError as any)(body.jobId, aborted ? 'modal_timeout' : `fetch_${e?.message || 'error'}`)
+      return { statusCode: 200, body: '' }
+    } finally {
+      clearTimeout(timer)
+    }
 
     if (!res.ok) {
       const errText = await res.text().catch(() => '')

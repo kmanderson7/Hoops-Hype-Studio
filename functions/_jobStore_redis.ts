@@ -61,12 +61,13 @@ export async function getRenderJobStatus(id: string): Promise<{
   eta?: number
   presets: { presetId: string; progress: number }[]
   downloads?: { presetId: string; url: string; expiresAt: string }[]
+  error?: string
 } | undefined> {
   const job = await getRenderJob(id)
   if (!job) return undefined
   if (job.status === 'error') {
     const presets = job.presets.map((p) => ({ presetId: p, progress: 0 }))
-    return { status: 'error', progress: 0, presets }
+    return { status: 'error', progress: 0, presets, error: job.error }
   }
   const elapsed = Date.now() - job.createdAt
   const ratio = Math.max(0, Math.min(1, elapsed / job.durationMs))

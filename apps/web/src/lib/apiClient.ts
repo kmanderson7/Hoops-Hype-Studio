@@ -72,7 +72,7 @@ export const api = {
   startRenderJob: (payload: { assetId?: string; trackId?: string; presets?: { presetId: string }[]; metadata?: any }) =>
     postJson<{ jobId: string }>('startRenderJob', payload),
   getJobStatus: (payload?: { jobId?: string }) =>
-    postJson<{ status: 'queued' | 'running' | 'done' | 'error'; progress?: number; eta?: number; fileUrl?: string; presets?: { presetId: string; progress: number }[] }>(
+    postJson<{ status: 'queued' | 'running' | 'done' | 'error'; progress?: number; eta?: number; fileUrl?: string; presets?: { presetId: string; progress: number }[]; error?: string }>(
       'getJobStatus',
       payload,
     ),
