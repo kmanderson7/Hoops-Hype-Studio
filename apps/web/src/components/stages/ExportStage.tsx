@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type { ExportPreset, ExportDownload } from '../../state/useStudioState'
 
 interface ExportStageProps {
@@ -9,9 +10,26 @@ interface ExportStageProps {
   downloads?: ExportDownload[]
   onDeleteExport?: (presetId: string) => void
   onDeleteAsset?: () => void
+  voiceoverEnabled?: boolean
+  onVoiceoverToggle?: (enabled: boolean) => void
+  sfxEnabled?: boolean
+  onSfxToggle?: (enabled: boolean) => void
 }
 
-export function ExportStage({ presets, onTogglePreset, onStartRender, renderStatus, isRendering, downloads, onDeleteExport, onDeleteAsset }: ExportStageProps) {
+export function ExportStage({
+  presets,
+  onTogglePreset,
+  onStartRender,
+  renderStatus,
+  isRendering,
+  downloads,
+  onDeleteExport,
+  onDeleteAsset,
+  voiceoverEnabled,
+  onVoiceoverToggle,
+  sfxEnabled,
+  onSfxToggle,
+}: ExportStageProps) {
   const labelFor = (presetId: string) => presets.find((p) => p.id === presetId)?.label || presetId
   return (
     <section className="space-y-6">
@@ -45,6 +63,38 @@ export function ExportStage({ presets, onTogglePreset, onStartRender, renderStat
           )}
         </div>
       </header>
+
+      {(onVoiceoverToggle || onSfxToggle) && (
+        <div className="rounded-3xl border border-amber-400/20 bg-amber-500/5 p-4">
+          <p className="text-xs uppercase tracking-[0.18em] text-amber-200/80">Broadcast Polish</p>
+          <div className="mt-3 flex flex-wrap gap-3">
+            {onVoiceoverToggle && (
+              <label className="flex cursor-pointer items-center gap-2 rounded-full border border-white/10 bg-slate-950/60 px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-900">
+                <input
+                  type="checkbox"
+                  checked={!!voiceoverEnabled}
+                  onChange={(e) => onVoiceoverToggle(e.target.checked)}
+                  className="h-4 w-4 rounded border border-white/20 bg-slate-900 accent-amber-400"
+                />
+                <span className="font-semibold">AI Anchor Narration</span>
+                <span className="text-slate-500">~$0.02/render</span>
+              </label>
+            )}
+            {onSfxToggle && (
+              <label className="flex cursor-pointer items-center gap-2 rounded-full border border-white/10 bg-slate-950/60 px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-900">
+                <input
+                  type="checkbox"
+                  checked={!!sfxEnabled}
+                  onChange={(e) => onSfxToggle(e.target.checked)}
+                  className="h-4 w-4 rounded border border-white/20 bg-slate-900 accent-amber-400"
+                />
+                <span className="font-semibold">Action SFX Stingers</span>
+                <span className="text-slate-500">free</span>
+              </label>
+            )}
+          </div>
+        </div>
+      )}
 
       <div className="grid gap-4 sm:grid-cols-2">
         {presets.map((preset) => (
@@ -103,14 +153,7 @@ export function ExportStage({ presets, onTogglePreset, onStartRender, renderStat
                   <p className="text-xs text-slate-400">Expires {new Date(d.expiresAt).toLocaleString()}</p>
                 </div>
                 <div className="flex items-center gap-2">
-                  <a
-                    href={d.url}
-                    download={`hype-${d.presetId}.mp4`}
-                    rel="noreferrer"
-                    className="rounded-full border border-emerald-400/40 bg-emerald-400/10 px-3 py-1 text-xs font-semibold text-emerald-100 hover:bg-emerald-400/20"
-                  >
-                    Download
-                  </a>
+                  <DownloadButton url={d.url} filename={`hype-${d.presetId}.mp4`} />
                   {onDeleteExport && (
                     <button
                       type="button"
@@ -139,5 +182,45 @@ function Stat({ label, value }: { label: string; value: string }) {
       <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{label}</p>
       <p className="mt-1 text-xs font-semibold text-slate-100">{value}</p>
     </div>
+  )
+}
+
+// Cross-origin downloads can't rely on the HTML `download` attribute (browsers
+// ignore it for non-same-origin URLs). Fetch the blob and trigger a synthetic
+// download from a same-origin object URL — guaranteed to save, no inline play.
+function DownloadButton({ url, filename }: { url: string; filename: string }) {
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | undefined>()
+  const onClick = async () => {
+    setErr(undefined)
+    setBusy(true)
+    try {
+      const res = await fetch(url)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const blob = await res.blob()
+      const objUrl = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = objUrl
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(objUrl)
+    } catch (e: any) {
+      setErr(e?.message || 'Download failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={busy}
+      title={err || 'Save MP4 to your computer'}
+      className="rounded-full border border-emerald-400/40 bg-emerald-400/10 px-3 py-1 text-xs font-semibold text-emerald-100 transition hover:bg-emerald-400/20 disabled:cursor-wait disabled:opacity-60"
+    >
+      {busy ? 'Downloading…' : err ? 'Retry' : 'Download'}
+    </button>
   )
 }

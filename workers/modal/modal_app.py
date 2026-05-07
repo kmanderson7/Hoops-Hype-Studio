@@ -144,7 +144,111 @@ class RenderRequest(BaseModel):
     assetId: str
     trackUrl: str
     presets: List[RenderPreset]
-    metadata: Optional[dict] = None  # overlays/branding/title, etc.
+    metadata: Optional[dict] = None  # overlays/branding/title/voiceover/sfx, etc.
+
+
+def _synthesize_sfx_palette(tmpdir: pathlib.Path) -> dict:
+    """
+    Generate short tonal stinger WAVs per action via ffmpeg lavfi sources.
+    Returns a dict mapping action label → WAV path. Free, no external assets.
+    Failures are silently dropped (action just gets no SFX in render).
+    """
+    palette: dict = {}
+    recipes = {
+        # Dunk: fat bass thump (60Hz fundamental + slight click), 280ms decay.
+        "Dunk": "sine=frequency=60:duration=0.28,afade=t=out:st=0:d=0.28,volume=2.5",
+        # Block: descending tone sweep, 320ms — feels like rejection.
+        "Block": "sine=frequency=300:duration=0.05,sine=frequency=80:duration=0.27,concat=n=2:v=0:a=1,afade=t=out:st=0:d=0.32,volume=2.0",
+        # Three Pointer: crisp snare-style noise burst, 120ms.
+        "Three Pointer": "anoisesrc=duration=0.12:color=white:amplitude=0.7,afade=t=out:st=0:d=0.12,volume=1.6",
+        # Steal: high-hat tick, 60ms.
+        "Steal": "anoisesrc=duration=0.06:color=pink:amplitude=0.5,afade=t=out:st=0:d=0.06,highpass=f=4000,volume=1.5",
+        # Layup: muted tom, 180ms.
+        "Layup": "sine=frequency=140:duration=0.18,afade=t=out:st=0:d=0.18,volume=1.4",
+    }
+    for action, expr in recipes.items():
+        # Slug the action name for filename: "Three Pointer" → "three_pointer"
+        slug = action.lower().replace(" ", "_")
+        out = tmpdir / f"sfx_{slug}.wav"
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "lavfi",
+            "-i", expr,
+            "-ar", "48000", "-ac", "2",
+            str(out),
+        ]
+        try:
+            subprocess.run(cmd, check=True, capture_output=True)
+            palette[action] = out
+        except Exception as e:
+            print(f"[sfx] failed for {action}: {e}")
+    return palette
+
+
+def _generate_voiceover(
+    segments: list,
+    target_jersey: Optional[str],
+    out_path: pathlib.Path,
+) -> Optional[pathlib.Path]:
+    """
+    Generate a single anchor-style narration MP3 covering the whole montage.
+
+    Pipeline:
+      1. GPT-4o writes a 40-70 word ESPN-style anchor read summarizing the
+         dominant actions + featured player. Tone: hype, present-tense, punchy.
+      2. OpenAI TTS (`tts-1` voice="onyx") renders to MP3.
+    Returns the MP3 path on success, or None on any error so the caller can
+    skip narration without failing the whole render.
+    """
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        return None
+
+    try:
+        # Compose a compact context for the script
+        action_counts: dict = {}
+        for s in segments[:12]:
+            a = (s.get("action") if isinstance(s, dict) else None) or "Other"
+            action_counts[a] = action_counts.get(a, 0) + 1
+        context_lines = ", ".join(f"{n} {a.lower()}{'s' if n != 1 else ''}" for a, n in action_counts.items())
+        subject = f"#{target_jersey}" if target_jersey else "the squad"
+
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key, timeout=30.0)
+
+        # Step 1: script — single GPT-4o call, structured response
+        prompt = (
+            f"You are an ESPN play-by-play anchor introducing a hype reel for {subject}. "
+            f"The reel features: {context_lines or 'mixed plays'}. "
+            f"Write a 40-70 word read in present tense, high energy, punchy short sentences. "
+            f"No 'and now' or 'tonight'. Open with a strong line referencing {subject}. "
+            f"Plain text, no markdown, no stage directions."
+        )
+        chat = client.chat.completions.create(
+            model="gpt-4o-2024-08-06",
+            max_tokens=180,
+            messages=[
+                {"role": "system", "content": "You write ESPN-grade hype reel narration. Tight, present-tense, never cheesy."},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        script = (chat.choices[0].message.content or "").strip()
+        if not script:
+            return None
+        print(f"[voiceover] script ({len(script)} chars): {script[:140]}...")
+
+        # Step 2: TTS — onyx is the deepest male voice, fits sports anchor tone
+        speech = client.audio.speech.create(
+            model="tts-1",
+            voice="onyx",
+            input=script,
+            response_format="mp3",
+        )
+        speech.write_to_file(str(out_path))
+        return out_path
+    except Exception as e:
+        print(f"[voiceover] generation failed: {e}")
+        return None
 
 
 class BeatsRequest(BaseModel):
@@ -1107,6 +1211,7 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
             if isinstance(cuts, list) and len(cuts) > 0:
                 seg_files: list[pathlib.Path] = []
                 seg_durations: list[float] = []
+                seg_actions: list[Optional[str]] = []  # per-segment action label for SFX keying
                 tdur = float(meta.get("transitionDuration", 0.18)) if isinstance(meta, dict) else 0.18
                 ttype = meta.get("transitionType", "fade") if isinstance(meta, dict) else "fade"
                 allowed = {"fade", "fadeblack", "wipeleft", "wiperight", "slideleft", "slideright"}
@@ -1197,6 +1302,7 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
                         subprocess.run(cmd_cut, check=True)
                         seg_durations.append(d)
                     seg_files.append(out_seg)
+                    seg_actions.append(seg.get("action") if isinstance(seg, dict) else None)
 
                 if len(seg_files) == 1:
                     input_path = seg_files[0]
@@ -1232,6 +1338,61 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
                     input_path = out_xf
         except Exception:
             input_path = src_path
+
+        # ---- Build action SFX stinger track (if enabled) ----
+        # Synthesize tonal stingers for each action and place them at the start
+        # of each segment in the output timeline. We fire on the cut (not at
+        # impact within the segment) for two reasons:
+        #   1. Avoids fighting the slow-mo speed-ramp filter chain.
+        #   2. Hype reels traditionally hit the BOOM on the cut, not mid-clip.
+        sfx_track_path: Optional[pathlib.Path] = None
+        if (req.metadata or {}).get("sfx") and seg_files and seg_durations:
+            try:
+                palette = _synthesize_sfx_palette(tmpdir)
+                if palette:
+                    # Compute output-time start of each segment, accounting for
+                    # the xfade overlaps (each transition compresses timeline by tdur).
+                    out_starts: list[float] = []
+                    cursor = 0.0
+                    for i, dur in enumerate(seg_durations):
+                        out_starts.append(cursor)
+                        # Next segment starts before this one ends by tdur (xfade)
+                        cursor += max(0.05, dur - (tdur if i < len(seg_durations) - 1 else 0.0))
+
+                    # Build a single sfx_track.wav by mixing each adelay'd stinger
+                    sfx_inputs: list[str] = []
+                    sfx_filters: list[str] = []
+                    keep = 0
+                    for i, action in enumerate(seg_actions):
+                        if not action or action not in palette:
+                            continue
+                        sfx_path = palette[action]
+                        delay_ms = int(out_starts[i] * 1000)
+                        sfx_inputs += ["-i", str(sfx_path)]
+                        # adelay applies per-channel; use the same value for stereo
+                        sfx_filters.append(f"[{keep}:a]adelay={delay_ms}|{delay_ms},apad[s{keep}]")
+                        keep += 1
+                    if keep > 0:
+                        sfx_track_path = tmpdir / "sfx_track.wav"
+                        mix_inputs = "".join(f"[s{i}]" for i in range(keep))
+                        # apad on each + duration=longest on amix gives a track at least as long
+                        # as the latest stinger; ffmpeg will silence-pad at the end as needed.
+                        filter_complex = "; ".join(sfx_filters) + f"; {mix_inputs}amix=inputs={keep}:duration=longest:dropout_transition=0[sfxout]"
+                        cmd_sfx = ["ffmpeg", "-y"] + sfx_inputs + [
+                            "-filter_complex", filter_complex,
+                            "-map", "[sfxout]",
+                            "-ar", "48000", "-ac", "2",
+                            str(sfx_track_path),
+                        ]
+                        try:
+                            subprocess.run(cmd_sfx, check=True, capture_output=True)
+                        except subprocess.CalledProcessError as e:
+                            stderr = e.stderr.decode("utf-8", errors="replace") if e.stderr else ""
+                            print(f"[sfx] track build failed: {stderr[-500:]}")
+                            sfx_track_path = None
+            except Exception as e:
+                print(f"[sfx] palette/track failed: {e}")
+                sfx_track_path = None
 
         # Subject-aware horizontal center for reframe presets:
         # take the average of per-segment subject_x if we have segments; otherwise sample whole video
@@ -1437,6 +1598,27 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
                 logo_idx = None
                 logo_path = None
 
+            # Optional anchor voiceover — generate once, mix into audio chain
+            vo_idx: Optional[int] = None
+            if meta_block.get("voiceover"):
+                vo_path = tmpdir / "vo.mp3"
+                vo_result = _generate_voiceover(
+                    meta_block.get("segments") or [],
+                    target_jersey or None,
+                    vo_path,
+                )
+                if vo_result and vo_path.exists():
+                    cmd += ["-i", str(vo_path)]
+                    vo_idx = input_index
+                    input_index += 1
+
+            # Optional action SFX stinger track — pre-built once outside the preset loop
+            sfx_idx: Optional[int] = None
+            if sfx_track_path is not None and sfx_track_path.exists():
+                cmd += ["-i", str(sfx_track_path)]
+                sfx_idx = input_index
+                input_index += 1
+
             # Video chain segments
             chain: list[str] = []
             video_label_in = "[0:v]"
@@ -1463,22 +1645,47 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
                 )
                 video_label_out = "[vout]"
 
-            # Audio chain
+            # Audio chain — build the music/VO mix first into [a_pre], then
+            # optionally amix the SFX stinger track on top, then loudnorm at the end.
             audio_map: list[str] = []
-            if music_idx is not None:
-                # Side-chain ducking: when source has loud crowd peak, music ducks to -6 dB.
-                # Then EBU R128 normalization to broadcast loudness.
+            if music_idx is not None and vo_idx is not None:
+                # Source + music + VO. Music ducks under source AND VO; source ducks under VO.
+                chain.append(
+                    f"[0:a]volume=1.0,asplit=2[a_main][a_sc];"
+                    f"[{music_idx}:a]volume=0.55[a_music];"
+                    f"[{vo_idx}:a]volume=1.4,asplit=2[a_vo][a_vo_sc];"
+                    f"[a_music][a_sc]sidechaincompress=threshold=0.06:ratio=8:attack=10:release=200[a_music_d];"
+                    f"[a_music_d][a_vo_sc]sidechaincompress=threshold=0.04:ratio=12:attack=5:release=300[a_music_dv];"
+                    f"[a_main][a_vo_sc]sidechaincompress=threshold=0.04:ratio=6:attack=5:release=300[a_main_dv];"
+                    f"[a_main_dv][a_music_dv][a_vo]amix=inputs=3:duration=first:dropout_transition=2[a_pre]"
+                )
+            elif music_idx is not None:
                 chain.append(
                     f"[0:a]volume=1.0,asplit=2[a_main][a_sc];"
                     f"[{music_idx}:a]volume=0.55[a_music];"
                     f"[a_music][a_sc]sidechaincompress=threshold=0.06:ratio=8:attack=10:release=200[a_music_d];"
-                    f"[a_main][a_music_d]amix=inputs=2:duration=first:dropout_transition=2,"
+                    f"[a_main][a_music_d]amix=inputs=2:duration=first:dropout_transition=2[a_pre]"
+                )
+            elif vo_idx is not None:
+                chain.append(
+                    f"[0:a]volume=1.0[a_main];"
+                    f"[{vo_idx}:a]volume=1.4,asplit=2[a_vo][a_vo_sc];"
+                    f"[a_main][a_vo_sc]sidechaincompress=threshold=0.04:ratio=6:attack=5:release=300[a_main_d];"
+                    f"[a_main_d][a_vo]amix=inputs=2:duration=first:dropout_transition=2[a_pre]"
+                )
+            else:
+                chain.append("[0:a]anull[a_pre]")
+
+            # Optional SFX stinger track on top, then EBU R128 at the end
+            if sfx_idx is not None:
+                chain.append(
+                    f"[{sfx_idx}:a]volume=1.0[a_sfx];"
+                    f"[a_pre][a_sfx]amix=inputs=2:duration=first:dropout_transition=0,"
                     f"aloudnorm=I=-14:TP=-1.5:LRA=11:dual_mono=true[aout]"
                 )
-                audio_map = ["-map", "[aout]"]
             else:
-                chain.append("[0:a]aloudnorm=I=-14:TP=-1.5:LRA=11:dual_mono=true[aout]")
-                audio_map = ["-map", "[aout]"]
+                chain.append("[a_pre]aloudnorm=I=-14:TP=-1.5:LRA=11:dual_mono=true[aout]")
+            audio_map = ["-map", "[aout]"]
 
             filter_graph = "; ".join(chain)
             cmd += [

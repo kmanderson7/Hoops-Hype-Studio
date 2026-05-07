@@ -313,6 +313,8 @@ export default function App() {
   // highlights so the user keeps their list/order; segments where the player
   // wasn't found get no bbox and fall back to ball-weighted reframe.
   const [isLockingTracking, setIsLockingTracking] = useState(false)
+  const [voiceoverEnabled, setVoiceoverEnabled] = useState(false)
+  const [sfxEnabled, setSfxEnabled] = useState(true)
   const handleLockTracking = async () => {
     if (!targetJersey || !assetId) return
     setIsLockingTracking(true)
@@ -410,17 +412,44 @@ export default function App() {
         const filteredHighlights = targetJersey
           ? highlights.filter((h) => (h.jerseyNumbers || []).includes(targetJersey))
           : highlights
+
+        // Action-aware cut length: ESPN holds dunks longer (savor the impact),
+        // snaps quicker on threes/passes (rhythm), holds blocks for the reaction.
+        // Multipliers are applied to the detected scene clipDuration.
+        const ACTION_DURATION_MULT: Record<string, number> = {
+          Dunk: 1.5,           // hold the slam + reaction
+          Block: 1.35,         // hold the rejection
+          Three: 1.2,          // (legacy alias, unlikely)
+          'Three Pointer': 1.2,
+          Steal: 1.15,
+          Layup: 1.1,
+          Rebound: 0.95,
+          Assist: 1.0,
+          Pass: 0.85,
+          Foul: 0.9,
+          Other: 1.0,
+        }
+        const MIN_CLIP = 1.0
+        const MAX_CLIP = 5.0
+
         const segments = filteredHighlights.slice(0, 12).map((h) => {
           const s0 = toSeconds(h.timestamp)
           const start = snap(s0)
-          const end = Math.max(start + 0.8, start + (h.clipDuration || 2))
-          const impact = Math.min(end, start + Math.min(0.3, (h.clipDuration || 2) / 2))
-          // Forward the per-scene bbox when present so the worker can seed
-          // its subject tracker on the target player instead of the ball.
+          const baseDur = h.clipDuration || 2
+          const mult = ACTION_DURATION_MULT[h.action] ?? 1.0
+          const tunedDur = Math.max(MIN_CLIP, Math.min(MAX_CLIP, baseDur * mult))
+          const end = Math.max(start + 0.8, start + tunedDur)
+          // Impact lands a bit later for held actions (dunk's apex, block's swat),
+          // earlier for rhythm cuts (steal, three release).
+          const impactBias = mult >= 1.3 ? 0.4 : mult >= 1.15 ? 0.3 : 0.2
+          const impact = Math.min(end, start + Math.min(impactBias * tunedDur, tunedDur / 2))
           const bbox = targetJersey && h.featuredBbox && h.featuredBbox.length >= 2
             ? h.featuredBbox
             : undefined
-          return bbox ? { start, end, impact, bbox } : { start, end, impact }
+          // Forward action so the worker can key SFX/voiceover off it.
+          const base: any = { start, end, impact, action: h.action }
+          if (bbox) base.bbox = bbox
+          return base
         })
 
         const payload = {
@@ -432,6 +461,8 @@ export default function App() {
             trackUrl: selectedTrack?.previewUrl,
             segments,
             targetJersey,
+            voiceover: voiceoverEnabled,
+            sfx: sfxEnabled,
           },
         }
         const { jobId } = await api.startRenderJob(payload)
@@ -585,6 +616,10 @@ export default function App() {
             downloads={exportDownloads}
             onDeleteExport={handleDeleteExport}
             onDeleteAsset={handleDeleteAsset}
+            voiceoverEnabled={voiceoverEnabled}
+            onVoiceoverToggle={setVoiceoverEnabled}
+            sfxEnabled={sfxEnabled}
+            onSfxToggle={setSfxEnabled}
           />
         )
       default:
