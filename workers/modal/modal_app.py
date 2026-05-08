@@ -157,8 +157,12 @@ def _synthesize_sfx_palette(tmpdir: pathlib.Path) -> dict:
     recipes = {
         # Dunk: fat bass thump (60Hz fundamental + slight click), 280ms decay.
         "Dunk": "sine=frequency=60:duration=0.28,afade=t=out:st=0:d=0.28,volume=2.5",
-        # Block: descending tone sweep, 320ms — feels like rejection.
-        "Block": "sine=frequency=300:duration=0.05,sine=frequency=80:duration=0.27,concat=n=2:v=0:a=1,afade=t=out:st=0:d=0.32,volume=2.0",
+        # Block: low boom, 320ms — feels like rejection. (Earlier multi-source
+        # `sine,sine,concat` recipe was invalid lavfi syntax: comma-chained
+        # sources can't be passed as a single `-i lavfi` arg, ffmpeg returns
+        # exit 1 and the action gets no SFX. Single low-frequency sine is
+        # close enough in feel and actually parses.)
+        "Block": "sine=frequency=110:duration=0.32,afade=t=out:st=0:d=0.32,volume=2.0",
         # Three Pointer: crisp snare-style noise burst, 120ms.
         "Three Pointer": "anoisesrc=duration=0.12:color=white:amplitude=0.7,afade=t=out:st=0:d=0.12,volume=1.6",
         # Steal: high-hat tick, 60ms.
@@ -1219,6 +1223,22 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
                 seg_durations: list[float] = []
                 seg_actions: list[Optional[str]] = []  # per-segment action label for SFX keying
                 tdur = float(meta.get("transitionDuration", 0.18)) if isinstance(meta, dict) else 0.18
+                # Probe source duration so we can clamp segment windows. ffmpeg's
+                # `-ss <past_end> -to <past_end>` succeeds with exit 0 but writes
+                # a 0-byte mp4, which then breaks the downstream xfade chain
+                # ("Stream specifier ':v' matches no streams"). Clamp upfront.
+                try:
+                    src_dur = float(subprocess.check_output(
+                        [
+                            "ffprobe", "-v", "error",
+                            "-show_entries", "format=duration",
+                            "-of", "default=noprint_wrappers=1:nokey=1",
+                            str(src_path),
+                        ],
+                        text=True,
+                    ).strip())
+                except Exception:
+                    src_dur = 0.0  # unknown → skip clamping
                 ttype = meta.get("transitionType", "fade") if isinstance(meta, dict) else "fade"
                 allowed = {"fade", "fadeblack", "wipeleft", "wiperight", "slideleft", "slideright"}
                 if ttype not in allowed:
@@ -1236,6 +1256,11 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
                         impact_t = float(impact) if impact is not None else None
                     except Exception:
                         continue
+                    # Clamp to source duration so we never -ss past the end of
+                    # the video and produce an empty trim file.
+                    if src_dur > 0:
+                        start = max(0.0, min(src_dur - 0.1, start))
+                        end = max(start + 0.1, min(src_dur, end))
                     if end <= start:
                         continue
                     d = max(0.1, end - start)
@@ -1293,8 +1318,7 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
                         ]
                         subprocess.run(cmd_cut, check=True)
                         # Adjust duration for slow-motion section
-                        d_adj = d + (ramp_hi - ramp_lo) * (1/0.75 - 1)
-                        seg_durations.append(d_adj)
+                        d_for_seg = d + (ramp_hi - ramp_lo) * (1/0.75 - 1)
                     else:
                         cmd_cut = [
                             "ffmpeg", "-y",
@@ -1306,7 +1330,18 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
                             str(out_seg),
                         ]
                         subprocess.run(cmd_cut, check=True)
-                        seg_durations.append(d)
+                        d_for_seg = d
+
+                    # Reject empty segments. ffmpeg can return exit 0 even when
+                    # `-ss/-to` produces a 0-frame file (e.g. trim window past
+                    # source duration despite our clamp, or the source has gaps).
+                    # Including a 0-byte segment makes the xfade chain die with
+                    # "Stream specifier ':v' matches no streams".
+                    if not out_seg.exists() or out_seg.stat().st_size < 1024:
+                        print(f"[render] seg_{i:02d} produced empty file (start={start}, end={end}); skipping")
+                        continue
+
+                    seg_durations.append(d_for_seg)
                     seg_files.append(out_seg)
                     seg_actions.append(seg.get("action") if isinstance(seg, dict) else None)
 
