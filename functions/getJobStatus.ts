@@ -22,6 +22,7 @@ export const handler: Handler = async (evt) => {
       statusCode: 200,
       body: JSON.stringify({
         status: state.status,
+        stage: state.stage,
         progress: state.progress,
         eta: state.eta,
         presets: state.presets,

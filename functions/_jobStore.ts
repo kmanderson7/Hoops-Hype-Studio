@@ -1,5 +1,10 @@
 type JobStatus = 'queued' | 'running' | 'done' | 'error'
 
+// Coarse pipeline stage. The bg fn writes transitions so the UI can show an
+// honest label ("Rendering on GPU…") instead of a fake percentage. `done`/`error`
+// mirror `status` and are derived, not written explicitly.
+export type RenderStage = 'queued' | 'dispatched' | 'encoding' | 'done' | 'error'
+
 export interface RenderPresetProgress {
   presetId: string
   progress: number
@@ -11,9 +16,10 @@ export interface RenderJob {
   trackId?: string
   presets: string[]
   createdAt: number
-  // simulated total duration (ms)
+  // simulated total duration (ms) — paces per-preset progress bars only
   durationMs: number
   status: JobStatus
+  stage?: RenderStage
   // populated when done. `key` is the S3 object key — kept so finalizeExport
   // can re-sign a fresh presigned URL on every download (Modal's URL has a
   // 1-hour TTL).
@@ -34,6 +40,25 @@ if (useRedis) {
   }
 }
 
+// In any multi-container environment (Netlify, Vercel, etc.) the in-memory
+// Map is silently broken: sync handlers, background functions, and pollers
+// run in different processes, so writes vanish. Refuse to start.
+const isMultiContainer = process.env.NETLIFY === 'true' || !!process.env.NETLIFY_DEV
+function assertSharedStore() {
+  // Reaching here means we're using the in-memory branch. That's only safe
+  // for single-process local dev — never for Netlify (multi-container) and
+  // never when Redis was *requested* but failed to load (require error).
+  if (isMultiContainer) {
+    throw new Error(
+      'Job store requires UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN in production. ' +
+        'In-memory fallback only works for single-process local dev.',
+    )
+  }
+  if (useRedis && !redisStore) {
+    throw new Error('UPSTASH_REDIS env vars are set but `_jobStore_redis` failed to load. Check the deploy bundle.')
+  }
+}
+
 const randomMs = (min: number, max: number) => Math.floor(min + Math.random() * (max - min))
 
 export function createRenderJob(params: { assetId?: string; trackId?: string; presets: string[] }): RenderJob {
@@ -41,6 +66,7 @@ export function createRenderJob(params: { assetId?: string; trackId?: string; pr
     // @ts-expect-error async boundary hidden from caller; used only by our handlers
     return redisStore.createRenderJob(params)
   }
+  assertSharedStore()
   const id = `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
   const durationMs = randomMs(4000, 9000)
   const job: RenderJob = {
@@ -51,6 +77,7 @@ export function createRenderJob(params: { assetId?: string; trackId?: string; pr
     createdAt: Date.now(),
     durationMs,
     status: 'queued',
+    stage: 'queued',
   }
   jobs.set(id, job)
   return job
@@ -61,11 +88,13 @@ export function getRenderJob(id: string) {
     // @ts-expect-error
     return redisStore.getRenderJob(id)
   }
+  assertSharedStore()
   return jobs.get(id)
 }
 
 export function getRenderJobStatus(id: string): {
   status: JobStatus
+  stage?: RenderStage
   progress: number
   eta?: number
   presets: RenderPresetProgress[]
@@ -76,12 +105,13 @@ export function getRenderJobStatus(id: string): {
     // @ts-expect-error
     return redisStore.getRenderJobStatus(id)
   }
+  assertSharedStore()
   const job = jobs.get(id)
   if (!job) return undefined
 
   if (job.status === 'error') {
     const presets = job.presets.map((presetId) => ({ presetId, progress: 0 }))
-    return { status: 'error', progress: 0, presets, error: job.error }
+    return { status: 'error', stage: 'error', progress: 0, presets, error: job.error }
   }
 
   const elapsed = Date.now() - job.createdAt
@@ -104,11 +134,12 @@ export function getRenderJobStatus(id: string): {
   }))
 
   const downloads = status === 'done' ? job.downloads : undefined
+  const stage: RenderStage = status === 'done' ? 'done' : (job.stage || (status === 'queued' ? 'queued' : 'encoding'))
 
   const eta = status === 'done' ? undefined : Math.max(1, Math.round((job.durationMs - elapsed) / 1000))
   job.status = status
 
-  return { status, progress, eta, presets, downloads }
+  return { status, stage, progress: cappedProgress, eta, presets, downloads }
 }
 
 export function setRenderJobDownloads(id: string, outputs: { presetId: string; url: string; key?: string }[]) {
@@ -116,10 +147,15 @@ export function setRenderJobDownloads(id: string, outputs: { presetId: string; u
     // @ts-expect-error
     return redisStore.setRenderJobDownloads(id, outputs)
   }
+  assertSharedStore()
   const job = jobs.get(id)
-  if (!job) return
+  // Throw rather than silently no-op — a missing job here means cross-instance
+  // write loss (in-memory mode in multi-container env). The bg fn's catch turns
+  // this into a `persist_failed` job error, surfacing the real problem.
+  if (!job) throw new Error(`job_not_found_in_memory_store: ${id}`)
   const exp = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
   job.downloads = outputs.map((o) => ({ presetId: o.presetId, url: o.url, expiresAt: exp, key: o.key }))
+  job.stage = 'done'
   jobs.set(id, job)
 }
 
@@ -128,9 +164,23 @@ export function setRenderJobError(id: string, error?: string) {
     // @ts-expect-error
     return redisStore.setRenderJobError(id, error)
   }
+  assertSharedStore()
   const job = jobs.get(id)
-  if (!job) return
+  if (!job) throw new Error(`job_not_found_in_memory_store: ${id}`)
   job.status = 'error'
+  job.stage = 'error'
   if (error) job.error = error
+  jobs.set(id, job)
+}
+
+export function setRenderJobStage(id: string, stage: RenderStage) {
+  if (useRedis && redisStore?.setRenderJobStage) {
+    // @ts-expect-error
+    return redisStore.setRenderJobStage(id, stage)
+  }
+  assertSharedStore()
+  const job = jobs.get(id)
+  if (!job) throw new Error(`job_not_found_in_memory_store: ${id}`)
+  job.stage = stage
   jobs.set(id, job)
 }

@@ -72,10 +72,27 @@ export const api = {
   startRenderJob: (payload: { assetId?: string; trackId?: string; presets?: { presetId: string }[]; metadata?: any }) =>
     postJson<{ jobId: string }>('startRenderJob', payload),
   getJobStatus: (payload?: { jobId?: string }) =>
-    postJson<{ status: 'queued' | 'running' | 'done' | 'error'; progress?: number; eta?: number; fileUrl?: string; presets?: { presetId: string; progress: number }[]; error?: string }>(
-      'getJobStatus',
-      payload,
-    ),
+    postJson<{
+      status: 'queued' | 'running' | 'done' | 'error'
+      stage?: 'queued' | 'dispatched' | 'encoding' | 'done' | 'error'
+      progress?: number
+      eta?: number
+      fileUrl?: string
+      presets?: { presetId: string; progress: number }[]
+      error?: string
+      payload?: { downloads?: { presetId: string; url: string; expiresAt: string; key?: string }[] }
+    }>('getJobStatus', payload),
+  getConfigHealth: () =>
+    postJson<{
+      ok: boolean
+      hasGpuWorker: boolean
+      hasRedis: boolean
+      hasStorage: boolean
+      hasHmacSecret: boolean
+      hasOpenAi: boolean
+      hasMusicApi: boolean
+      hasLogtail: boolean
+    }>('configHealth'),
   finalizeExport: (payload: { renderJobId: string }) =>
     postJson<{ downloads: { presetId: string; url: string; expiresAt: string }[] }>('finalizeExport', payload),
   ingestAsset: (payload: { assetId: string; key: string }) => postJson<{ proxyUrl?: string; waveformUrl?: string }>('ingestAsset', payload),

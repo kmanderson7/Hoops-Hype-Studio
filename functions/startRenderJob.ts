@@ -33,7 +33,17 @@ export const handler: Handler = async (evt) => {
     // synchronous handler can return jobId in <1s. Background fns get up to
     // 15 minutes of runtime — enough for any reasonable render. The frontend
     // polls getJobStatus and sees downloads appear when Modal completes.
-    if (GPU_WORKER_BASE_URL && GPU_WORKER_TOKEN) {
+    if (!GPU_WORKER_BASE_URL || !GPU_WORKER_TOKEN) {
+      // No worker configured: mark the job as errored immediately so the
+      // first poll surfaces a clear "GPU worker not configured" message
+      // instead of an indefinite 98% stall.
+      await log({ level: 'error', msg: 'render_no_worker_env', jobId: job.id })
+      await (setRenderJobError as any)(job.id, 'no_worker_configured').catch(() => {})
+      if (ip) await clearRenderLock(ip)
+      return { statusCode: 200, body: JSON.stringify({ renderJobId: job.id, jobId: job.id }) }
+    }
+
+    {
       const origin = SITE_URL || `https://${(evt.headers['host'] as string) || ''}`
       try {
         // Awaiting this is fine — Netlify ACKs background invocations near-instantly

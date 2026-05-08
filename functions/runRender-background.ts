@@ -1,5 +1,5 @@
 import type { Handler } from '@netlify/functions'
-import { setRenderJobDownloads, setRenderJobError } from './_jobStore'
+import { setRenderJobDownloads, setRenderJobError, setRenderJobStage } from './_jobStore'
 import { clearRenderLock } from './_auth'
 import { log, captureException } from './_obs'
 
@@ -48,6 +48,7 @@ export const handler: Handler = async (evt) => {
     }
 
     await log({ level: 'info', msg: 'render_background_start', jobId: body.jobId })
+    await (setRenderJobStage as any)(body.jobId, 'dispatched').catch(() => {})
 
     // Hard cap on Modal /render. Modal's own @app.function(timeout=900) at
     // workers/modal/modal_app.py:1744 gives the worker 15 min; the broadcast-polish
@@ -60,6 +61,7 @@ export const handler: Handler = async (evt) => {
     let res: Response
     const t0 = Date.now()
     await log({ level: 'info', msg: 'render_background_modal_call_start', jobId: body.jobId, presetCount: (body.presets || []).length, hasTrackUrl: !!body.trackUrl, timeoutMs: RENDER_TIMEOUT_MS })
+    await (setRenderJobStage as any)(body.jobId, 'encoding').catch(() => {})
     try {
       res = await fetch(`${GPU_WORKER_BASE_URL}/render`, {
         method: 'POST',

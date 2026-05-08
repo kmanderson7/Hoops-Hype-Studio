@@ -469,29 +469,36 @@ export default function App() {
         setRenderStatus(`Render job queued: ${jobId}`)
 
         // Poll job status
-        let progress = 10
         const pollStartedAt = Date.now()
         // Past Modal's 12-min budget + 2-min buffer for cold start. If we're
         // still polling after this, the bg fn died silently and the user
-        // would otherwise be stuck staring at 99% forever.
+        // would otherwise be stuck staring at a stage label forever.
         const STALL_FLOOR_MS = 14 * 60 * 1000
+        const fmtElapsed = (ms: number) => {
+          const s = Math.floor(ms / 1000)
+          return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
+        }
+        const stageLabel = (stage?: string) => {
+          switch (stage) {
+            case 'queued': return 'Queued…'
+            case 'dispatched': return 'Sending to GPU worker…'
+            case 'encoding': return 'Rendering on GPU (this can take 2–12 min)…'
+            default: return 'Rendering…'
+          }
+        }
         const poll = window.setInterval(async () => {
           try {
             const status = await api.getJobStatus({ jobId })
             console.debug('[render-poll]', { jobId, ...status })
-            if (status.progress != null) progress = Math.max(progress, status.progress)
-            const presetProgress = (status as any).presets as { presetId: string; progress: number }[] | undefined
+            const presetProgress = status.presets
             if (presetProgress && Array.isArray(presetProgress)) {
               presetProgress.forEach((pp) => markPresetProgress(pp.presetId, Math.min(99, pp.progress)))
-            } else {
-              enabled.forEach((p) => markPresetProgress(p.id, Math.min(99, progress)))
             }
 
             if (status.status === 'done') {
               enabled.forEach((p) => markPresetProgress(p.id, 100))
-              const payload = (status as any).payload
-              if (payload?.downloads) {
-                setExportDownloads(payload.downloads)
+              if (status.payload?.downloads) {
+                setExportDownloads(status.payload.downloads)
               }
               // Refresh signed URLs via finalizeExport
               try {
@@ -503,19 +510,21 @@ export default function App() {
               setIsRendering(false)
               window.clearInterval(poll)
             } else if (status.status === 'error') {
-              const reason = (status as any).error as string | undefined
+              const reason = status.error
               const friendly =
                 reason === 'modal_timeout'
                   ? 'Render timed out — the GPU worker took too long to respond. Please retry.'
                   : reason === 'no_outputs'
                     ? 'Render failed — the worker returned no files (likely an ffmpeg or storage error). Please retry.'
                     : reason === 'no_worker_configured'
-                      ? 'Render failed — GPU worker is not configured on the server.'
-                      : reason && reason.startsWith('kickoff_')
-                        ? "Render couldn't be dispatched to the GPU worker. Please retry."
-                        : reason && reason.startsWith('modal_')
-                          ? `Render failed (worker error ${reason.replace('modal_', '')}). Please retry.`
-                          : 'Render failed. Please retry.'
+                      ? 'Render failed — GPU worker is not configured on the server. Open System Health to verify.'
+                      : reason === 'persist_failed'
+                        ? 'Render failed — the server could not save the result. The job store may be misconfigured (Redis not set?). Open System Health to verify.'
+                        : reason && reason.startsWith('kickoff_')
+                          ? "Render couldn't be dispatched to the GPU worker. Please retry."
+                          : reason && reason.startsWith('modal_')
+                            ? `Render failed (worker error ${reason.replace('modal_', '')}). Please retry.`
+                            : 'Render failed. Please retry.'
               setRenderStatus(friendly)
               setIsRendering(false)
               window.clearInterval(poll)
@@ -526,8 +535,8 @@ export default function App() {
               setIsRendering(false)
               window.clearInterval(poll)
             } else {
-              progress = Math.min(98, progress + 8)
-              setRenderStatus(`Rendering... ${progress}% — ${jobId.slice(-8)}`)
+              const elapsed = fmtElapsed(Date.now() - pollStartedAt)
+              setRenderStatus(`${stageLabel(status.stage)} ${elapsed} — ${jobId.slice(-8)}`)
             }
           } catch (e) {
             setRenderStatus(`Render polling error: ${e}`)

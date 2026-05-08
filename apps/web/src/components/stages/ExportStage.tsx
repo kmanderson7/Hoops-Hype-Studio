@@ -1,5 +1,8 @@
 import { useState } from 'react'
+import { api } from '../../lib/apiClient'
 import type { ExportPreset, ExportDownload } from '../../state/useStudioState'
+
+type ConfigHealth = Awaited<ReturnType<typeof api.getConfigHealth>>
 
 interface ExportStageProps {
   presets: ExportPreset[]
@@ -63,6 +66,7 @@ export function ExportStage({
           )}
         </div>
       </header>
+      <SystemHealthLink />
 
       {(onVoiceoverToggle || onSfxToggle) && (
         <div className="rounded-3xl border border-amber-400/20 bg-amber-500/5 p-4">
@@ -182,6 +186,72 @@ function Stat({ label, value }: { label: string; value: string }) {
       <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{label}</p>
       <p className="mt-1 text-xs font-semibold text-slate-100">{value}</p>
     </div>
+  )
+}
+
+function SystemHealthLink() {
+  const [open, setOpen] = useState(false)
+  const [data, setData] = useState<ConfigHealth | undefined>()
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | undefined>()
+  const load = async () => {
+    setBusy(true)
+    setErr(undefined)
+    try {
+      const r = await api.getConfigHealth()
+      setData(r)
+      setOpen(true)
+    } catch (e: any) {
+      setErr(e?.message || 'Failed to load system health')
+      setOpen(true)
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <div className="text-xs">
+      <button
+        type="button"
+        onClick={load}
+        disabled={busy}
+        className="rounded-full border border-white/15 bg-slate-950/60 px-3 py-1 font-semibold text-slate-300 hover:border-white/30 disabled:opacity-50"
+      >
+        {busy ? 'Checking…' : 'System Health'}
+      </button>
+      {open && (
+        <div className="mt-2 rounded-xl border border-white/10 bg-slate-950/80 p-3">
+          {err ? (
+            <p className="text-red-300">{err}</p>
+          ) : data ? (
+            <ul className="grid grid-cols-2 gap-x-4 gap-y-1">
+              <HealthRow label="Redis (Upstash)" ok={data.hasRedis} required />
+              <HealthRow label="GPU Worker (Modal)" ok={data.hasGpuWorker} required />
+              <HealthRow label="Storage (Cloudflare R2)" ok={data.hasStorage} required />
+              <HealthRow label="HMAC Secret" ok={data.hasHmacSecret} required />
+              <HealthRow label="OpenAI" ok={data.hasOpenAi} />
+              <HealthRow label="Music API" ok={data.hasMusicApi} />
+              <HealthRow label="Logtail" ok={data.hasLogtail} />
+            </ul>
+          ) : null}
+          {data && !data.ok && (
+            <p className="mt-2 text-amber-200">
+              One or more required services are not configured. Renders will fail until these are set.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function HealthRow({ label, ok, required }: { label: string; ok: boolean; required?: boolean }) {
+  return (
+    <li className="flex items-center justify-between gap-2">
+      <span className={required ? 'font-semibold text-slate-100' : 'text-slate-400'}>{label}</span>
+      <span className={ok ? 'text-emerald-300' : required ? 'text-red-300' : 'text-slate-500'}>
+        {ok ? '✓' : required ? '✗ missing' : '— optional'}
+      </span>
+    </li>
   )
 }
 
