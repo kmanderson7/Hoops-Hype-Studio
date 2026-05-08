@@ -1564,12 +1564,20 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
                 )
 
             # ---- ESPN-grade cinematic color grade ----
-            # 1) BT.709 colorspace lock for accurate color
+            # 1) Force yuv420p so downstream eq/curves/unsharp see a known
+            #    pixel format. We previously used `colorspace=all=bt709:...`
+            #    but that filter requires the *input* to have valid colorspace
+            #    tags (color_space, color_primaries, color_trc); most real
+            #    user uploads (phone cams, sample clips) don't tag these and
+            #    the filter errors out with "Error while filtering: Invalid
+            #    argument", killing every preset. Using plain `format=yuv420p`
+            #    is robust against any input and the output is still bt709
+            #    via the `-pix_fmt yuv420p` flag set on the encoder later.
             # 2) Mild contrast & saturation lift
             # 3) Vibrance via curves: gentle S-curve on luma, slight blue lift in highlights
             # 4) Subtle unsharp for crisp edges (avoid halos)
             grade_filter = (
-                "colorspace=all=bt709:format=yuv420p,"
+                "format=yuv420p,"
                 "eq=contrast=1.08:saturation=1.18:brightness=0.02:gamma=1.02,"
                 "curves=preset=increase_contrast,"
                 "unsharp=5:5:0.6:5:5:0.0"
