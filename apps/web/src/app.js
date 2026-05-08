@@ -14,7 +14,7 @@ export default function App() {
     const renderTimers = useRef([]);
     const assetIdRef = useRef(undefined);
     const proxyUrlRef = useRef(undefined);
-    const { assetId, proxyUrl, currentStage, stageStatus, fileInfo, ingestUpload, tasks, processingProgress, highlights, beatMarkers, energyCurve, musicTracks, selectedTrackId, exportPresets, exportDownloads, renderStatus, insights, updateTask, setProcessingProgress, setStageStatus, setCurrentStage, setHighlights, setBeatMarkers, setEnergyCurve, setMusicTracks, selectTrack, markPresetProgress, togglePreset, setRenderStatus, setExportDownloads, overlayConfig, setOverlayConfig, setInsights, setAssetInfo, uploadRunId, reset, } = useStudioState((state) => ({
+    const { assetId, proxyUrl, currentStage, stageStatus, fileInfo, ingestUpload, tasks, processingProgress, highlights, beatMarkers, energyCurve, musicTracks, selectedTrackId, exportPresets, exportDownloads, renderStatus, insights, updateTask, setProcessingProgress, setStageStatus, setCurrentStage, setHighlights, setBeatMarkers, setEnergyCurve, setMusicTracks, selectTrack, markPresetProgress, togglePreset, setRenderStatus, setExportDownloads, overlayConfig, setOverlayConfig, setInsights, setAssetInfo, targetJersey, setTargetJersey, uploadRunId, reset, } = useStudioState((state) => ({
         assetId: state.assetId,
         proxyUrl: state.proxyUrl,
         currentStage: state.currentStage,
@@ -49,6 +49,8 @@ export default function App() {
         setOverlayConfig: state.setOverlayConfig,
         setInsights: state.setInsights,
         setAssetInfo: state.setAssetInfo,
+        targetJersey: state.targetJersey,
+        setTargetJersey: state.setTargetJersey,
         uploadRunId: state.uploadRunId,
         reset: state.reset,
     }));
@@ -255,6 +257,50 @@ export default function App() {
     const handleAdvanceFromAnalysis = () => {
         setCurrentStage('music');
     };
+    // "Lock tracking" — re-runs /highlights with the chosen jersey so GPT-4o
+    // returns per-scene bboxes for that player. Merges bboxes into existing
+    // highlights so the user keeps their list/order; segments where the player
+    // wasn't found get no bbox and fall back to ball-weighted reframe.
+    const [isLockingTracking, setIsLockingTracking] = useState(false);
+    const [voiceoverEnabled, setVoiceoverEnabled] = useState(false);
+    const [sfxEnabled, setSfxEnabled] = useState(true);
+    const handleLockTracking = async () => {
+        if (!targetJersey || !assetId)
+            return;
+        setIsLockingTracking(true);
+        try {
+            const hi = await api.detectHighlights({
+                assetId,
+                proxyUrl: proxyUrlRef.current,
+                videoUrl: proxyUrlRef.current || fileInfo?.previewUrl,
+                targetJersey,
+            });
+            const segs = hi.segments || [];
+            // Index incoming bboxes by id, fall back to timestamp+action match
+            const bboxById = new Map();
+            const bboxByTs = new Map();
+            for (const s of segs) {
+                if (s?.featuredBbox && Array.isArray(s.featuredBbox) && s.featuredBbox.length >= 2) {
+                    if (s.id)
+                        bboxById.set(String(s.id), s.featuredBbox);
+                    if (s.timestamp && s.action)
+                        bboxByTs.set(`${s.timestamp}|${s.action}`, s.featuredBbox);
+                }
+            }
+            const merged = highlights.map((h) => {
+                const next = bboxById.get(h.id) || bboxByTs.get(`${h.timestamp}|${h.action}`);
+                return next ? { ...h, featuredBbox: next } : h;
+            });
+            setHighlights(merged);
+            setRenderStatus(`Tracking locked on #${targetJersey}.`);
+        }
+        catch (e) {
+            setRenderStatus(`Lock tracking failed: ${e?.message || e}`);
+        }
+        finally {
+            setIsLockingTracking(false);
+        }
+    };
     const handleSelectTrack = (trackId) => {
         selectTrack(trackId);
     };
@@ -310,12 +356,46 @@ export default function App() {
                     }
                     return diff <= 0.3 ? best : t;
                 };
-                const segments = highlights.slice(0, 12).map((h) => {
+                const filteredHighlights = targetJersey
+                    ? highlights.filter((h) => (h.jerseyNumbers || []).includes(targetJersey))
+                    : highlights;
+                // Action-aware cut length: ESPN holds dunks longer (savor the impact),
+                // snaps quicker on threes/passes (rhythm), holds blocks for the reaction.
+                // Multipliers are applied to the detected scene clipDuration.
+                const ACTION_DURATION_MULT = {
+                    Dunk: 1.5, // hold the slam + reaction
+                    Block: 1.35, // hold the rejection
+                    Three: 1.2, // (legacy alias, unlikely)
+                    'Three Pointer': 1.2,
+                    Steal: 1.15,
+                    Layup: 1.1,
+                    Rebound: 0.95,
+                    Assist: 1.0,
+                    Pass: 0.85,
+                    Foul: 0.9,
+                    Other: 1.0,
+                };
+                const MIN_CLIP = 1.0;
+                const MAX_CLIP = 5.0;
+                const segments = filteredHighlights.slice(0, 12).map((h) => {
                     const s0 = toSeconds(h.timestamp);
                     const start = snap(s0);
-                    const end = Math.max(start + 0.8, start + (h.clipDuration || 2));
-                    const impact = Math.min(end, start + Math.min(0.3, (h.clipDuration || 2) / 2));
-                    return { start, end, impact };
+                    const baseDur = h.clipDuration || 2;
+                    const mult = ACTION_DURATION_MULT[h.action] ?? 1.0;
+                    const tunedDur = Math.max(MIN_CLIP, Math.min(MAX_CLIP, baseDur * mult));
+                    const end = Math.max(start + 0.8, start + tunedDur);
+                    // Impact lands a bit later for held actions (dunk's apex, block's swat),
+                    // earlier for rhythm cuts (steal, three release).
+                    const impactBias = mult >= 1.3 ? 0.4 : mult >= 1.15 ? 0.3 : 0.2;
+                    const impact = Math.min(end, start + Math.min(impactBias * tunedDur, tunedDur / 2));
+                    const bbox = targetJersey && h.featuredBbox && h.featuredBbox.length >= 2
+                        ? h.featuredBbox
+                        : undefined;
+                    // Forward action so the worker can key SFX/voiceover off it.
+                    const base = { start, end, impact, action: h.action };
+                    if (bbox)
+                        base.bbox = bbox;
+                    return base;
                 });
                 const payload = {
                     assetId,
@@ -325,29 +405,43 @@ export default function App() {
                         overlay: overlayConfig,
                         trackUrl: selectedTrack?.previewUrl,
                         segments,
+                        targetJersey,
+                        voiceover: voiceoverEnabled,
+                        sfx: sfxEnabled,
                     },
                 };
                 const { jobId } = await api.startRenderJob(payload);
                 setRenderStatus(`Render job queued: ${jobId}`);
                 // Poll job status
-                let progress = 10;
+                const pollStartedAt = Date.now();
+                // Past Modal's 12-min budget + 2-min buffer for cold start. If we're
+                // still polling after this, the bg fn died silently and the user
+                // would otherwise be stuck staring at a stage label forever.
+                const STALL_FLOOR_MS = 14 * 60 * 1000;
+                const fmtElapsed = (ms) => {
+                    const s = Math.floor(ms / 1000);
+                    return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+                };
+                const stageLabel = (stage) => {
+                    switch (stage) {
+                        case 'queued': return 'Queued…';
+                        case 'dispatched': return 'Sending to GPU worker…';
+                        case 'encoding': return 'Rendering on GPU (this can take 2–12 min)…';
+                        default: return 'Rendering…';
+                    }
+                };
                 const poll = window.setInterval(async () => {
                     try {
                         const status = await api.getJobStatus({ jobId });
-                        if (status.progress != null)
-                            progress = Math.max(progress, status.progress);
+                        console.debug('[render-poll]', { jobId, ...status });
                         const presetProgress = status.presets;
                         if (presetProgress && Array.isArray(presetProgress)) {
                             presetProgress.forEach((pp) => markPresetProgress(pp.presetId, Math.min(99, pp.progress)));
                         }
-                        else {
-                            enabled.forEach((p) => markPresetProgress(p.id, Math.min(99, progress)));
-                        }
                         if (status.status === 'done') {
                             enabled.forEach((p) => markPresetProgress(p.id, 100));
-                            const payload = status.payload;
-                            if (payload?.downloads) {
-                                setExportDownloads(payload.downloads);
+                            if (status.payload?.downloads) {
+                                setExportDownloads(status.payload.downloads);
                             }
                             // Refresh signed URLs via finalizeExport
                             try {
@@ -361,13 +455,34 @@ export default function App() {
                             window.clearInterval(poll);
                         }
                         else if (status.status === 'error') {
-                            setRenderStatus('Render failed. Please retry.');
+                            const reason = status.error;
+                            const friendly = reason === 'modal_timeout'
+                                ? 'Render timed out — the GPU worker took too long to respond. Please retry.'
+                                : reason === 'no_outputs'
+                                    ? 'Render failed — the worker returned no files (likely an ffmpeg or storage error). Please retry.'
+                                    : reason === 'no_worker_configured'
+                                        ? 'Render failed — GPU worker is not configured on the server. Open System Health to verify.'
+                                        : reason === 'persist_failed'
+                                            ? 'Render failed — the server could not save the result. The job store may be misconfigured (Redis not set?). Open System Health to verify.'
+                                            : reason && reason.startsWith('kickoff_')
+                                                ? "Render couldn't be dispatched to the GPU worker. Please retry."
+                                                : reason && reason.startsWith('modal_')
+                                                    ? `Render failed (worker error ${reason.replace('modal_', '')}). Please retry.`
+                                                    : 'Render failed. Please retry.';
+                            setRenderStatus(friendly);
+                            setIsRendering(false);
+                            window.clearInterval(poll);
+                        }
+                        else if (Date.now() - pollStartedAt > STALL_FLOOR_MS) {
+                            // Final safety net: bg fn died without writing an error and the
+                            // job is past Modal's own timeout budget.
+                            setRenderStatus('Render is taking longer than expected and may have failed silently. Please retry.');
                             setIsRendering(false);
                             window.clearInterval(poll);
                         }
                         else {
-                            progress = Math.min(98, progress + 8);
-                            setRenderStatus(`Rendering... ${progress}%`);
+                            const elapsed = fmtElapsed(Date.now() - pollStartedAt);
+                            setRenderStatus(`${stageLabel(status.stage)} ${elapsed} — ${jobId.slice(-8)}`);
                         }
                     }
                     catch (e) {
@@ -378,7 +493,19 @@ export default function App() {
                 renderTimers.current.push(poll);
             }
             catch (e) {
-                setRenderStatus(`Failed to start render: ${e}`);
+                let msg = `Failed to start render: ${e}`;
+                const raw = typeof e?.message === 'string' ? e.message : '';
+                try {
+                    const parsed = JSON.parse(raw);
+                    if (parsed?.detail === 'RENDER_CONCURRENCY_LIMIT') {
+                        msg = 'You already have a render in progress. Please wait for it to finish, or check the export panel below.';
+                    }
+                    else if (parsed?.title) {
+                        msg = `Failed to start render: ${parsed.title}${parsed.detail ? ` (${parsed.detail})` : ''}`;
+                    }
+                }
+                catch { }
+                setRenderStatus(msg);
                 setIsRendering(false);
             }
         })();
@@ -431,13 +558,13 @@ export default function App() {
             case 'upload':
                 return (_jsx(UploadStage, { fileInfo: fileInfo, onFileAccepted: handleFileAccepted, isProcessing: stageStatus.analysis !== 'pending' }));
             case 'analysis':
-                return (_jsx(AnalysisStage, { tasks: tasks, processingProgress: processingProgress, highlights: highlights, beatMarkers: beatMarkers, energyCurve: energyCurve, onProceed: handleAdvanceFromAnalysis }));
+                return (_jsx(AnalysisStage, { tasks: tasks, processingProgress: processingProgress, highlights: highlights, beatMarkers: beatMarkers, energyCurve: energyCurve, targetJersey: targetJersey, onTargetJerseyChange: setTargetJersey, onLockTracking: handleLockTracking, isLockingTracking: isLockingTracking, onProceed: handleAdvanceFromAnalysis }));
             case 'music':
                 return (_jsx(MusicStage, { tracks: musicTracks, selectedTrackId: selectedTrackId, onSelect: handleSelectTrack, onLock: handleLockTrack }));
             case 'editor':
                 return (_jsx(EditorStage, { fileInfo: fileInfo, highlights: highlights, beatMarkers: beatMarkers, selectedTrack: selectedTrack, onLaunchExport: handleOpenExport, overlayConfig: overlayConfig, onOverlayChange: setOverlayConfig }));
             case 'export':
-                return (_jsx(ExportStage, { presets: exportPresets, onTogglePreset: togglePreset, onStartRender: handleStartRender, renderStatus: renderStatus, isRendering: isRendering, downloads: exportDownloads, onDeleteExport: handleDeleteExport, onDeleteAsset: handleDeleteAsset }));
+                return (_jsx(ExportStage, { presets: exportPresets, onTogglePreset: togglePreset, onStartRender: handleStartRender, renderStatus: renderStatus, isRendering: isRendering, downloads: exportDownloads, onDeleteExport: handleDeleteExport, onDeleteAsset: handleDeleteAsset, voiceoverEnabled: voiceoverEnabled, onVoiceoverToggle: setVoiceoverEnabled, sfxEnabled: sfxEnabled, onSfxToggle: setSfxEnabled }));
             default:
                 return null;
         }

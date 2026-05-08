@@ -25,6 +25,7 @@ export const api = {
     recommendMusic: (payload) => postJson('recommendMusic', payload),
     startRenderJob: (payload) => postJson('startRenderJob', payload),
     getJobStatus: (payload) => postJson('getJobStatus', payload),
+    getConfigHealth: () => postJson('configHealth'),
     finalizeExport: (payload) => postJson('finalizeExport', payload),
     ingestAsset: (payload) => postJson('ingestAsset', payload),
     deleteAsset: (payload) => postJson('deleteAsset', payload),
