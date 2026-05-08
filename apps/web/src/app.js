@@ -440,17 +440,47 @@ export default function App() {
                         }
                         if (status.status === 'done') {
                             enabled.forEach((p) => markPresetProgress(p.id, 100));
-                            if (status.payload?.downloads) {
+                            // Visible-by-default log so we can triage "done but no downloads"
+                            // without enabling Verbose level in the browser console.
+                            console.warn('[render-done] payload', {
+                                jobId,
+                                hasPayloadDownloads: !!status.payload?.downloads,
+                                count: status.payload?.downloads?.length ?? 0,
+                                status,
+                            });
+                            if (status.payload?.downloads && status.payload.downloads.length > 0) {
                                 setExportDownloads(status.payload.downloads);
                             }
-                            // Refresh signed URLs via finalizeExport
+                            // Refresh signed URLs via finalizeExport — but don't silently
+                            // swallow errors. If re-signing fails, leave the payload-set
+                            // URLs alone (they're valid for 1h) and surface the failure.
+                            let finalizeFailed = false;
                             try {
                                 const fz = await api.finalizeExport({ renderJobId: jobId });
-                                setExportDownloads(fz.downloads);
+                                if (fz?.downloads && fz.downloads.length > 0) {
+                                    setExportDownloads(fz.downloads);
+                                }
+                                else {
+                                    console.warn('[finalize] returned empty downloads', fz);
+                                }
                             }
-                            catch { }
-                            setRenderStatus('All exports complete. Signed URLs ready.');
-                            setStageStatus('export', 'complete');
+                            catch (e) {
+                                finalizeFailed = true;
+                                console.error('[finalize] failed', e);
+                            }
+                            const finalDownloads = useStudioState.getState().exportDownloads;
+                            if (finalDownloads.length === 0) {
+                                // Lying "All exports complete" with no actual files would send
+                                // the user looking in the wrong place. Tell them the truth.
+                                setRenderStatus(finalizeFailed
+                                    ? 'Render finished but URL re-signing failed. Refresh the page and try again.'
+                                    : 'Render reported complete but no downloads were produced. Check Modal logs for ffmpeg/upload errors.');
+                                setStageStatus('export', 'active');
+                            }
+                            else {
+                                setRenderStatus('All exports complete. Signed URLs ready.');
+                                setStageStatus('export', 'complete');
+                            }
                             setIsRendering(false);
                             window.clearInterval(poll);
                         }
