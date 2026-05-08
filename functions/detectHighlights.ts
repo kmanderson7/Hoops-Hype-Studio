@@ -10,7 +10,14 @@ export const handler: Handler = async (evt) => {
     if (guard) return guard
     const body = JSON.parse(evt.body || '{}') as { assetId?: string; proxyUrl?: string; videoUrl?: string; targetJersey?: string }
     // Prefer proxyUrl/videoUrl for demo; assetId for real pipeline
-    if (GPU_WORKER_BASE_URL && GPU_WORKER_TOKEN) {
+    const sourceUrl = body.proxyUrl || body.videoUrl || ''
+    // Browser blob: URLs are local-only — Python urllib can't fetch them, and
+    // the Modal /highlights endpoint will throw `unknown url type: blob`. If
+    // the frontend calls us before R2 ingest completes (race on uploadRunId),
+    // fall through to the stub so the user still gets a usable segment list
+    // and no spurious 500 reaches Modal.
+    const fetchable = /^https?:\/\//i.test(sourceUrl)
+    if (GPU_WORKER_BASE_URL && GPU_WORKER_TOKEN && fetchable) {
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), 8_000)
       try {
@@ -19,7 +26,7 @@ export const handler: Handler = async (evt) => {
           headers: { 'content-type': 'application/json', authorization: `Bearer ${GPU_WORKER_TOKEN}` },
           body: JSON.stringify({
             assetId: body.assetId || 'demo',
-            proxyUrl: body.proxyUrl || body.videoUrl,
+            proxyUrl: sourceUrl,
             targetJersey: body.targetJersey,
           }),
           signal: controller.signal,
