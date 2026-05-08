@@ -8,7 +8,7 @@ export interface RenderJob {
   createdAt: number
   durationMs: number
   status: JobStatus
-  downloads?: { presetId: string; url: string; expiresAt: string }[]
+  downloads?: { presetId: string; url: string; expiresAt: string; key?: string }[]
   error?: string
 }
 
@@ -60,7 +60,7 @@ export async function getRenderJobStatus(id: string): Promise<{
   progress: number
   eta?: number
   presets: { presetId: string; progress: number }[]
-  downloads?: { presetId: string; url: string; expiresAt: string }[]
+  downloads?: { presetId: string; url: string; expiresAt: string; key?: string }[]
   error?: string
 } | undefined> {
   const job = await getRenderJob(id)
@@ -82,11 +82,11 @@ export async function getRenderJobStatus(id: string): Promise<{
   return { status, progress: cappedProgress, eta, presets, downloads: status === 'done' ? job.downloads : undefined }
 }
 
-export async function setRenderJobDownloads(id: string, outputs: { presetId: string; url: string }[]) {
+export async function setRenderJobDownloads(id: string, outputs: { presetId: string; url: string; key?: string }[]) {
   const job = await getRenderJob(id)
   if (!job) return
   const exp = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
-  job.downloads = outputs.map((o) => ({ ...o, expiresAt: exp }))
+  job.downloads = outputs.map((o) => ({ presetId: o.presetId, url: o.url, expiresAt: exp, key: o.key }))
   await setRenderJob(job)
 }
 

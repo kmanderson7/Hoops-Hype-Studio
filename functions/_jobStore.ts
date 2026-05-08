@@ -14,8 +14,10 @@ export interface RenderJob {
   // simulated total duration (ms)
   durationMs: number
   status: JobStatus
-  // populated when done
-  downloads?: { presetId: string; url: string; expiresAt: string }[]
+  // populated when done. `key` is the S3 object key — kept so finalizeExport
+  // can re-sign a fresh presigned URL on every download (Modal's URL has a
+  // 1-hour TTL).
+  downloads?: { presetId: string; url: string; expiresAt: string; key?: string }[]
   // populated when the worker fails — short message for surfacing in UI/logs
   error?: string
 }
@@ -67,7 +69,7 @@ export function getRenderJobStatus(id: string): {
   progress: number
   eta?: number
   presets: RenderPresetProgress[]
-  downloads?: { presetId: string; url: string; expiresAt: string }[]
+  downloads?: { presetId: string; url: string; expiresAt: string; key?: string }[]
   error?: string
 } | undefined {
   if (useRedis && redisStore?.getRenderJobStatus) {
@@ -109,7 +111,7 @@ export function getRenderJobStatus(id: string): {
   return { status, progress, eta, presets, downloads }
 }
 
-export function setRenderJobDownloads(id: string, outputs: { presetId: string; url: string }[]) {
+export function setRenderJobDownloads(id: string, outputs: { presetId: string; url: string; key?: string }[]) {
   if (useRedis && redisStore?.setRenderJobDownloads) {
     // @ts-expect-error
     return redisStore.setRenderJobDownloads(id, outputs)
@@ -117,7 +119,7 @@ export function setRenderJobDownloads(id: string, outputs: { presetId: string; u
   const job = jobs.get(id)
   if (!job) return
   const exp = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
-  job.downloads = outputs.map((o) => ({ presetId: o.presetId, url: o.url, expiresAt: exp }))
+  job.downloads = outputs.map((o) => ({ presetId: o.presetId, url: o.url, expiresAt: exp, key: o.key }))
   jobs.set(id, job)
 }
 

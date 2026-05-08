@@ -470,6 +470,11 @@ export default function App() {
 
         // Poll job status
         let progress = 10
+        const pollStartedAt = Date.now()
+        // Past Modal's 12-min budget + 2-min buffer for cold start. If we're
+        // still polling after this, the bg fn died silently and the user
+        // would otherwise be stuck staring at 99% forever.
+        const STALL_FLOOR_MS = 14 * 60 * 1000
         const poll = window.setInterval(async () => {
           try {
             const status = await api.getJobStatus({ jobId })
@@ -506,10 +511,18 @@ export default function App() {
                     ? 'Render failed — the worker returned no files (likely an ffmpeg or storage error). Please retry.'
                     : reason === 'no_worker_configured'
                       ? 'Render failed — GPU worker is not configured on the server.'
-                      : reason && reason.startsWith('modal_')
-                        ? `Render failed (worker error ${reason.replace('modal_', '')}). Please retry.`
-                        : 'Render failed. Please retry.'
+                      : reason && reason.startsWith('kickoff_')
+                        ? "Render couldn't be dispatched to the GPU worker. Please retry."
+                        : reason && reason.startsWith('modal_')
+                          ? `Render failed (worker error ${reason.replace('modal_', '')}). Please retry.`
+                          : 'Render failed. Please retry.'
               setRenderStatus(friendly)
+              setIsRendering(false)
+              window.clearInterval(poll)
+            } else if (Date.now() - pollStartedAt > STALL_FLOOR_MS) {
+              // Final safety net: bg fn died without writing an error and the
+              // job is past Modal's own timeout budget.
+              setRenderStatus('Render is taking longer than expected and may have failed silently. Please retry.')
               setIsRendering(false)
               window.clearInterval(poll)
             } else {

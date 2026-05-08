@@ -1,5 +1,5 @@
 import type { Handler } from '@netlify/functions'
-import { createRenderJob } from './_jobStore'
+import { createRenderJob, setRenderJobError } from './_jobStore'
 import { requireHmacNonce, checkRenderConcurrency, setRenderLock, clearRenderLock } from './_auth'
 import { log, captureException } from './_obs'
 
@@ -39,7 +39,7 @@ export const handler: Handler = async (evt) => {
         // Awaiting this is fine — Netlify ACKs background invocations near-instantly
         // (just registers the job, doesn't wait for it to finish). If we DON'T await,
         // the in-flight fetch would be killed when the handler returns.
-        await fetch(`${origin}/.netlify/functions/runRender-background`, {
+        const res = await fetch(`${origin}/.netlify/functions/runRender-background`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
@@ -51,10 +51,20 @@ export const handler: Handler = async (evt) => {
             metadata: body.metadata || {},
           }),
         })
+        if (!res.ok) {
+          // Bg fn never registered (host header mismatch, function load failure,
+          // deploy in flight, etc.). Mark the job so the user gets immediate
+          // feedback instead of staring at 99% for 14 minutes.
+          const detail = await res.text().catch(() => '')
+          await log({ level: 'error', msg: 'render_bg_kickoff_failed', jobId: job.id, status: res.status, detail: detail.slice(0, 500) })
+          await (setRenderJobError as any)(job.id, `kickoff_${res.status}`)
+          if (ip) await clearRenderLock(ip)
+        }
       } catch (e: any) {
         // Kickoff failed — the bg fn will never run, so release the lock now
         // so the user isn't stuck for 15 minutes on a job that never dispatched.
         if (ip) await clearRenderLock(ip)
+        await (setRenderJobError as any)(job.id, 'kickoff_exception').catch(() => {})
         await captureException(e, { where: 'startRenderJob:bg_kickoff' })
       }
     }

@@ -264,6 +264,7 @@ class BeatsResponse(BaseModel):
 class RenderOutput(BaseModel):
     presetId: str
     url: str
+    key: Optional[str] = None
 
 
 class RenderResponse(BaseModel):
@@ -1186,7 +1187,12 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
 
     outputs: list[RenderOutput] = []
     if not s3:
-        return RenderResponse(outputs=outputs)
+        # Surface this loudly so runRender-background tags the job with
+        # `modal_500` and the user sees a real error instead of forever-99%.
+        raise HTTPException(
+            status_code=500,
+            detail="S3 not configured: set STORAGE_BUCKET / STORAGE_ACCESS_KEY / STORAGE_SECRET_KEY",
+        )
 
     # Resolve source: use proxy in proxy/{assetId}.mp4
     src_key = f"proxy/{req.assetId}.mp4"
@@ -1714,30 +1720,44 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
                     "-movflags", "+faststart",
                     str(out_path),
                 ]
-                subprocess.run(fallback_cmd, check=True)
+                try:
+                    subprocess.run(fallback_cmd, check=True, capture_output=True)
+                except subprocess.CalledProcessError as e2:
+                    stderr2 = e2.stderr.decode("utf-8", errors="replace") if e2.stderr else ""
+                    print(f"[render] fallback ffmpeg also failed for preset={p.presetId}: {stderr2[-2000:]}")
+                    # Skip this preset; let other presets still produce outputs.
+                    continue
 
             key = f"exports/{req.assetId}-{p.presetId}.mp4"
             download_name = f"hype-{p.presetId}-{req.assetId}.mp4"
-            s3.upload_file(
-                str(out_path),
-                bucket,
-                key,
-                ExtraArgs={
-                    "ContentType": "video/mp4",
-                    "ContentDisposition": f'attachment; filename="{download_name}"',
-                },
-            )
-            url = s3.generate_presigned_url(
-                "get_object",
-                Params={
-                    "Bucket": bucket,
-                    "Key": key,
-                    "ResponseContentDisposition": f'attachment; filename="{download_name}"',
-                },
-                ExpiresIn=3600,
-            )
-            outputs.append(RenderOutput(presetId=p.presetId, url=url))
+            try:
+                s3.upload_file(
+                    str(out_path),
+                    bucket,
+                    key,
+                    ExtraArgs={
+                        "ContentType": "video/mp4",
+                        "ContentDisposition": f'attachment; filename="{download_name}"',
+                    },
+                )
+                url = s3.generate_presigned_url(
+                    "get_object",
+                    Params={
+                        "Bucket": bucket,
+                        "Key": key,
+                        "ResponseContentDisposition": f'attachment; filename="{download_name}"',
+                    },
+                    ExpiresIn=3600,
+                )
+            except Exception as upload_err:
+                print(f"[render] s3 upload/presign failed for preset={p.presetId}: {type(upload_err).__name__}: {upload_err}")
+                continue
+            outputs.append(RenderOutput(presetId=p.presetId, url=url, key=key))
 
+    if not outputs:
+        # Every preset failed — surface as 500 so the bg fn writes a real error
+        # to the job and the user sees a clear failure instead of forever-99%.
+        raise HTTPException(status_code=500, detail="all presets failed; check Modal logs for ffmpeg/upload errors")
     return RenderResponse(outputs=outputs)
 
 

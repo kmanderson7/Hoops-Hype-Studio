@@ -92,7 +92,7 @@ export const handler: Handler = async (evt) => {
       return { statusCode: 200, body: '' }
     }
 
-    const data = await res.json().catch(() => null) as { outputs?: { presetId: string; url: string }[] } | null
+    const data = await res.json().catch(() => null) as { outputs?: { presetId: string; url: string; key?: string }[] } | null
     if (data?.outputs && data.outputs.length > 0) {
       const tWrite = Date.now()
       await log({ level: 'info', msg: 'render_background_set_downloads_start', jobId: body.jobId, count: data.outputs.length })
