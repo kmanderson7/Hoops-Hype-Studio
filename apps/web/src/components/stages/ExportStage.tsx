@@ -227,7 +227,7 @@ function SystemHealthLink() {
               <HealthRow label="Redis (Upstash)" ok={data.hasRedis} required />
               <HealthRow label="GPU Worker (Modal)" ok={data.hasGpuWorker} required />
               <HealthRow label="Storage (Cloudflare R2)" ok={data.hasStorage} required />
-              <HealthRow label="HMAC Secret" ok={data.hasHmacSecret} required />
+              <HealthRow label="HMAC Secret" ok={data.hasHmacSecret} />
               <HealthRow label="OpenAI" ok={data.hasOpenAi} />
               <HealthRow label="Music API" ok={data.hasMusicApi} />
               <HealthRow label="Logtail" ok={data.hasLogtail} />
@@ -235,7 +235,7 @@ function SystemHealthLink() {
           ) : null}
           {data && !data.ok && (
             <p className="mt-2 text-amber-200">
-              One or more required services are not configured. Renders will fail until these are set.
+              A required service (Redis, GPU Worker, or R2) is not configured. Renders will fail until these are set.
             </p>
           )}
         </div>

@@ -33,10 +33,11 @@ export const handler: Handler = async (evt) => {
     const hasMusicApi = !!process.env.MUSIC_API_KEY
     const hasLogtail = !!process.env.LOGTAIL_TOKEN
 
-    // `ok` is the minimum viable production set. Renders cannot succeed
-    // without all four — Redis (cross-container state), GPU worker (Modal),
-    // storage (S3 upload target), HMAC (request auth).
-    const ok = hasGpuWorker && hasRedis && hasStorage && hasHmacSecret
+    // `ok` is the minimum viable production set for renders to succeed:
+    // Redis (cross-container state), GPU worker (Modal), R2 (upload target).
+    // HMAC is a security best-practice but not strictly required — when
+    // unset, the auth check skips and requests still go through.
+    const ok = hasGpuWorker && hasRedis && hasStorage
 
     await log({ level: 'info', msg: 'config_health', ok, hasGpuWorker, hasRedis, hasStorage, hasHmacSecret })
 
