@@ -292,8 +292,12 @@ export default function App() {
   // through several tracks quickly.
   useEffect(() => {
     if (!selectedTrackId || !selectedTrack?.previewUrl) return
-    // Skip the silent demo WAV — librosa on silence is meaningless.
-    if (selectedTrack.previewUrl.startsWith('data:')) return
+    // Skip URLs that Modal /beats can't fetch + analyze:
+    //   - data: URIs (silent demo WAVs — librosa on silence is meaningless)
+    //   - non-http URLs ('#' from broken provider responses, blob:, etc.)
+    // Without this guard, librosa 500s on the HTML/empty payload and we burn
+    // a Modal cold-start every track click for no benefit.
+    if (!/^https?:\/\//i.test(selectedTrack.previewUrl)) return
     let cancelled = false
     ;(async () => {
       try {

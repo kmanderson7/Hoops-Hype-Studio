@@ -60,20 +60,31 @@ export class PixabayProvider implements MusicProvider {
     if (!res.ok) return []
     const data = (await res.json().catch(() => null)) as { hits?: PixabayHit[] } | null
     const hits = data?.hits ?? []
-    return hits.map(
-      (h): Track & { artist?: string; duration?: number } => ({
-        url: h.audioURL || h.url || '#',
-        title: h.tags || 'Hype Track',
-        bpm: typeof h.bpm === 'number' ? h.bpm : 130,
-        mood: h.mood || 'high energy',
-        energy: Math.min(1, Math.max(0.6, typeof h.energy === 'number' ? h.energy : 0.85)),
-        license: 'royalty-free',
-        // Extras kept on the object for downstream scoring; not strictly part
-        // of `Track` but harmless additions.
-        artist: h.user || 'Unknown',
-        duration: typeof h.duration === 'number' ? h.duration : 180,
-      }),
-    )
+    // Pixabay's standard /api/ endpoint doesn't actually serve audio for most
+    // queries — `media_type=audio` is often silently ignored and the response
+    // is image hits with no `audioURL` and `url` either missing or pointing
+    // at a webpage. If we surface those as tracks, the frontend ships their
+    // bogus URLs to Modal /beats and librosa 500s on the HTML response.
+    // Drop hits without a usable HTTPS audio URL; if nothing's left, return
+    // empty so recommendMusic falls through to the demo silent-WAV tracks.
+    const isPlayable = (u: string | undefined): u is string =>
+      !!u && /^https?:\/\//i.test(u) && u !== '#'
+    return hits
+      .filter((h) => isPlayable(h.audioURL) || isPlayable(h.url))
+      .map(
+        (h): Track & { artist?: string; duration?: number } => ({
+          url: (isPlayable(h.audioURL) ? h.audioURL : h.url) as string,
+          title: h.tags || 'Hype Track',
+          bpm: typeof h.bpm === 'number' ? h.bpm : 130,
+          mood: h.mood || 'high energy',
+          energy: Math.min(1, Math.max(0.6, typeof h.energy === 'number' ? h.energy : 0.85)),
+          license: 'royalty-free',
+          // Extras kept on the object for downstream scoring; not strictly part
+          // of `Track` but harmless additions.
+          artist: h.user || 'Unknown',
+          duration: typeof h.duration === 'number' ? h.duration : 180,
+        }),
+      )
   }
 }
 
