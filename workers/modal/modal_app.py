@@ -1198,8 +1198,40 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
             detail="S3 not configured: set STORAGE_BUCKET / STORAGE_ACCESS_KEY / STORAGE_SECRET_KEY",
         )
 
-    # Resolve source: use proxy in proxy/{assetId}.mp4
-    src_key = f"proxy/{req.assetId}.mp4"
+    # Resolve source: prefer the 720p60 proxy at proxy/{assetId}.mp4 (created
+    # by /ingest), but fall back to the original upload at uploads/{assetId}/*.
+    # This makes /render self-healing when /ingest never ran or aborted —
+    # which happens when Netlify's sync function timeout (10s) cuts off the
+    # ffmpeg transcode running on Modal. Without this fallback, render 500s
+    # because urllib.request.urlretrieve raises HTTPError on the missing key.
+    proxy_key = f"proxy/{req.assetId}.mp4"
+    src_key: Optional[str] = None
+    try:
+        s3.head_object(Bucket=bucket, Key=proxy_key)
+        src_key = proxy_key
+    except Exception:
+        # Proxy missing — list uploads/{assetId}/ and pick the largest file
+        # as the source (the user's actual upload). Path-style addressing on R2
+        # mirrors S3's list_objects_v2 contract.
+        try:
+            resp = s3.list_objects_v2(Bucket=bucket, Prefix=f"uploads/{req.assetId}/")
+            contents = resp.get("Contents") or []
+            if contents:
+                best = max(contents, key=lambda o: o.get("Size", 0) or 0)
+                src_key = best.get("Key")
+        except Exception:
+            src_key = None
+
+    if not src_key:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"No source found for asset {req.assetId}: neither "
+                f"proxy/{req.assetId}.mp4 nor uploads/{req.assetId}/* exist in R2. "
+                f"Re-upload the clip or check that /ingest completed."
+            ),
+        )
+
     src_url = s3.generate_presigned_url(
         ClientMethod="get_object",
         Params={"Bucket": bucket, "Key": src_key},

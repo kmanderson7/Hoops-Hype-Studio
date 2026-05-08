@@ -65,8 +65,20 @@ export const handler: Handler = async (evt) => {
       expiresIn: 900,
     })
 
+    // Modal /ingest does an ffmpeg transcode + R2 upload; for typical clips
+    // it runs 20-60+s. Our previous 8s pre-abort meant we returned
+    // `proxyUrl: undefined` while Modal kept transcoding (or got cut off
+    // mid-stream), and any subsequent /render would 500 because
+    // proxy/{assetId}.mp4 didn't exist. Modal /render now self-heals via the
+    // uploads/{assetId}/* fallback (workers/modal/modal_app.py), so this
+    // function can return early without the proxy and render still works.
+    //
+    // Use a 9s budget — under Netlify's Hobby 10s sync cap. On Pro plans
+    // (26s sync cap) this could safely go higher, but the render-side
+    // fallback removes the urgency. When the abort fires, log it so the
+    // operator can see the timing in Netlify logs.
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), 8_000)
+    const timer = setTimeout(() => controller.abort(), 9_000)
     try {
       const res = await fetch(`${GPU_WORKER_BASE_URL}/ingest`, {
         method: 'POST',
@@ -82,7 +94,13 @@ export const handler: Handler = async (evt) => {
       return { statusCode: 200, body: JSON.stringify(data) }
     } catch (abortErr: any) {
       if (abortErr?.name === 'AbortError') {
-        return { statusCode: 200, body: JSON.stringify({ proxyUrl: undefined }) }
+        await log({
+          level: 'warn',
+          msg: 'ingest_aborted_proxy_pending',
+          assetId: body.assetId,
+          note: 'Modal /ingest still running; render will fall back to uploads/<assetId>/*',
+        })
+        return { statusCode: 200, body: JSON.stringify({ proxyUrl: undefined, pending: true }) }
       }
       throw abortErr
     } finally {
