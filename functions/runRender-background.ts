@@ -51,11 +51,12 @@ export const handler: Handler = async (evt) => {
     await (setRenderJobStage as any)(body.jobId, 'dispatched').catch(() => {})
 
     // Hard cap on Modal /render. Modal's own @app.function(timeout=900) at
-    // workers/modal/modal_app.py:1744 gives the worker 15 min; the broadcast-polish
+    // workers/modal/modal_app.py:1764 gives the worker 15 min; the broadcast-polish
     // render path (subject tracking + multi-segment ffmpeg + voiceover + multi-preset
-    // upload) can legitimately consume several minutes. Sit 3 min under Modal's cap
-    // so we abort cleanly with `modal_timeout` before Modal itself times out.
-    const RENDER_TIMEOUT_MS = 12 * 60 * 1000
+    // upload) can legitimately consume most of that budget. Leave a small buffer so
+    // we still surface `modal_timeout` ourselves instead of waiting for Modal to kill
+    // the worker first.
+    const RENDER_TIMEOUT_MS = 14.5 * 60 * 1000
     const ac = new AbortController()
     const timer = setTimeout(() => ac.abort(), RENDER_TIMEOUT_MS)
     let res: Response

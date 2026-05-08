@@ -1434,6 +1434,35 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
                 color="#FFB347",
             )
 
+        music_path: Optional[pathlib.Path] = None
+        if req.trackUrl:
+            candidate = tmpdir / "music.mp3"
+            try:
+                urllib.request.urlretrieve(req.trackUrl, candidate)
+                music_path = candidate
+            except Exception:
+                music_path = None
+
+        logo_path: Optional[pathlib.Path] = None
+        try:
+            if ov_block.logo and ov_block.logo.url:
+                candidate = tmpdir / "logo.png"
+                urllib.request.urlretrieve(ov_block.logo.url, candidate)
+                logo_path = candidate
+        except Exception:
+            logo_path = None
+
+        vo_path: Optional[pathlib.Path] = None
+        if meta_block.get("voiceover"):
+            candidate = tmpdir / "vo.mp3"
+            vo_result = _generate_voiceover(
+                meta_block.get("segments") or [],
+                target_jersey or None,
+                candidate,
+            )
+            if vo_result and candidate.exists():
+                vo_path = candidate
+
         for p in req.presets:
             out_path = tmpdir / f"out-{p.presetId}.mp4"
 
@@ -1581,42 +1610,23 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
             input_index = 1
             music_idx: Optional[int] = None
             logo_idx: Optional[int] = None
-            logo_path: Optional[pathlib.Path] = None
 
-            if req.trackUrl:
-                music_path = tmpdir / "music.mp3"
-                try:
-                    urllib.request.urlretrieve(req.trackUrl, music_path)
-                    cmd += ["-i", str(music_path)]
-                    music_idx = input_index
-                    input_index += 1
-                except Exception:
-                    music_idx = None
+            if music_path is not None and music_path.exists():
+                cmd += ["-i", str(music_path)]
+                music_idx = input_index
+                input_index += 1
 
-            try:
-                if ov_block.logo and ov_block.logo.url:
-                    logo_path = tmpdir / "logo.png"
-                    urllib.request.urlretrieve(ov_block.logo.url, logo_path)
-                    cmd += ["-i", str(logo_path)]
-                    logo_idx = input_index
-                    input_index += 1
-            except Exception:
-                logo_idx = None
-                logo_path = None
+            if logo_path is not None and logo_path.exists():
+                cmd += ["-i", str(logo_path)]
+                logo_idx = input_index
+                input_index += 1
 
             # Optional anchor voiceover — generate once, mix into audio chain
             vo_idx: Optional[int] = None
-            if meta_block.get("voiceover"):
-                vo_path = tmpdir / "vo.mp3"
-                vo_result = _generate_voiceover(
-                    meta_block.get("segments") or [],
-                    target_jersey or None,
-                    vo_path,
-                )
-                if vo_result and vo_path.exists():
-                    cmd += ["-i", str(vo_path)]
-                    vo_idx = input_index
-                    input_index += 1
+            if vo_path is not None and vo_path.exists():
+                cmd += ["-i", str(vo_path)]
+                vo_idx = input_index
+                input_index += 1
 
             # Optional action SFX stinger track — pre-built once outside the preset loop
             sfx_idx: Optional[int] = None
