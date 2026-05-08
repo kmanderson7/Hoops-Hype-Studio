@@ -1,0 +1,15 @@
+{
+  "name": "functions",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "dependencies": {
+    "@hhs/core": "workspace:*",
+    "@hhs/providers": "workspace:*",
+    "fast-xml-parser": "^4.4.0"
+  },
+  "devDependencies": {
+    "@netlify/functions": "^2.8.0",
+    "@types/node": "^20.11.0"
+  }
+}

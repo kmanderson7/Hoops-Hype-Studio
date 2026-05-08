@@ -28,13 +28,33 @@ export interface RenderJob {
   error?: string
 }
 
+export interface RenderJobStatusView {
+  status: JobStatus
+  stage?: RenderStage
+  progress: number
+  eta?: number
+  presets: RenderPresetProgress[]
+  downloads?: { presetId: string; url: string; expiresAt: string; key?: string }[]
+  error?: string
+}
+
+// Shared interface so the in-memory and Redis variants are interchangeable.
+interface JobStore {
+  createRenderJob(params: { assetId?: string; trackId?: string; presets: string[] }): Promise<RenderJob>
+  getRenderJob(id: string): Promise<RenderJob | undefined>
+  getRenderJobStatus(id: string): Promise<RenderJobStatusView | undefined>
+  setRenderJobDownloads(id: string, outputs: { presetId: string; url: string; key?: string }[]): Promise<void>
+  setRenderJobError(id: string, error?: string): Promise<void>
+  setRenderJobStage(id: string, stage: RenderStage): Promise<void>
+}
+
 const jobs = new Map<string, RenderJob>()
 const useRedis = !!(process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN)
-let redisStore: typeof import('./_jobStore_redis') | undefined
+let redisStore: JobStore | undefined
 if (useRedis) {
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    redisStore = require('./_jobStore_redis')
+    redisStore = require('./_jobStore_redis') as JobStore
   } catch {
     // ignore, fallback to memory
   }
@@ -61,11 +81,8 @@ function assertSharedStore() {
 
 const randomMs = (min: number, max: number) => Math.floor(min + Math.random() * (max - min))
 
-export function createRenderJob(params: { assetId?: string; trackId?: string; presets: string[] }): RenderJob {
-  if (useRedis && redisStore?.createRenderJob) {
-    // @ts-expect-error async boundary hidden from caller; used only by our handlers
-    return redisStore.createRenderJob(params)
-  }
+export async function createRenderJob(params: { assetId?: string; trackId?: string; presets: string[] }): Promise<RenderJob> {
+  if (useRedis && redisStore) return redisStore.createRenderJob(params)
   assertSharedStore()
   const id = `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
   const durationMs = randomMs(4000, 9000)
@@ -83,28 +100,14 @@ export function createRenderJob(params: { assetId?: string; trackId?: string; pr
   return job
 }
 
-export function getRenderJob(id: string) {
-  if (useRedis && redisStore?.getRenderJob) {
-    // @ts-expect-error
-    return redisStore.getRenderJob(id)
-  }
+export async function getRenderJob(id: string): Promise<RenderJob | undefined> {
+  if (useRedis && redisStore) return redisStore.getRenderJob(id)
   assertSharedStore()
   return jobs.get(id)
 }
 
-export function getRenderJobStatus(id: string): {
-  status: JobStatus
-  stage?: RenderStage
-  progress: number
-  eta?: number
-  presets: RenderPresetProgress[]
-  downloads?: { presetId: string; url: string; expiresAt: string; key?: string }[]
-  error?: string
-} | undefined {
-  if (useRedis && redisStore?.getRenderJobStatus) {
-    // @ts-expect-error
-    return redisStore.getRenderJobStatus(id)
-  }
+export async function getRenderJobStatus(id: string): Promise<RenderJobStatusView | undefined> {
+  if (useRedis && redisStore) return redisStore.getRenderJobStatus(id)
   assertSharedStore()
   const job = jobs.get(id)
   if (!job) return undefined
@@ -142,11 +145,8 @@ export function getRenderJobStatus(id: string): {
   return { status, stage, progress: cappedProgress, eta, presets, downloads }
 }
 
-export function setRenderJobDownloads(id: string, outputs: { presetId: string; url: string; key?: string }[]) {
-  if (useRedis && redisStore?.setRenderJobDownloads) {
-    // @ts-expect-error
-    return redisStore.setRenderJobDownloads(id, outputs)
-  }
+export async function setRenderJobDownloads(id: string, outputs: { presetId: string; url: string; key?: string }[]): Promise<void> {
+  if (useRedis && redisStore) return redisStore.setRenderJobDownloads(id, outputs)
   assertSharedStore()
   const job = jobs.get(id)
   // Throw rather than silently no-op — a missing job here means cross-instance
@@ -159,11 +159,8 @@ export function setRenderJobDownloads(id: string, outputs: { presetId: string; u
   jobs.set(id, job)
 }
 
-export function setRenderJobError(id: string, error?: string) {
-  if (useRedis && redisStore?.setRenderJobError) {
-    // @ts-expect-error
-    return redisStore.setRenderJobError(id, error)
-  }
+export async function setRenderJobError(id: string, error?: string): Promise<void> {
+  if (useRedis && redisStore) return redisStore.setRenderJobError(id, error)
   assertSharedStore()
   const job = jobs.get(id)
   if (!job) throw new Error(`job_not_found_in_memory_store: ${id}`)
@@ -173,11 +170,8 @@ export function setRenderJobError(id: string, error?: string) {
   jobs.set(id, job)
 }
 
-export function setRenderJobStage(id: string, stage: RenderStage) {
-  if (useRedis && redisStore?.setRenderJobStage) {
-    // @ts-expect-error
-    return redisStore.setRenderJobStage(id, stage)
-  }
+export async function setRenderJobStage(id: string, stage: RenderStage): Promise<void> {
+  if (useRedis && redisStore) return redisStore.setRenderJobStage(id, stage)
   assertSharedStore()
   const job = jobs.get(id)
   if (!job) throw new Error(`job_not_found_in_memory_store: ${id}`)

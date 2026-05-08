@@ -37,9 +37,17 @@ type DetectHighlightsFn = {
     featuredBbox?: number[]
   }[]
   proxyUrl?: string
+  /** True when the GPU worker isn't configured and segments are demo data. */
+  fallback?: boolean
 }
 
-type DetectBeatsFn = { bpm: number; beatGrid: number[]; downbeats?: number[] }
+type DetectBeatsFn = {
+  bpm: number
+  beatGrid: number[]
+  downbeats?: number[]
+  /** True when the GPU worker isn't configured and the grid is the canned 130 BPM stub. */
+  fallback?: boolean
+}
 
 type RecommendMusicFn = {
   tracks: {
@@ -49,15 +57,17 @@ type RecommendMusicFn = {
     bpm: number
     mood: string
     energy: number
-    license: string
+    license?: string
     matchScore?: number
     key?: string
     waveform?: number[]
+    fallback?: boolean
   }[]
   avgBpm?: number
   avgEnergy?: number
   energyCurve?: number[]
   peakMoments?: number[]
+  fallback?: boolean
 }
 
 export const api = {

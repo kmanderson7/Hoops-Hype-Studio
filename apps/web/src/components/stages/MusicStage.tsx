@@ -50,6 +50,14 @@ export function MusicStage({ tracks, selectedTrackId, onSelect, onLock }: MusicS
                 <div>
                   <p className={`text-sm font-semibold ${isSelected ? 'text-white' : 'text-slate-100'}`}>
                     {track.title}
+                    {track.fallback && (
+                      <span
+                        title="Demo track — configure MUSIC_API_KEY (Pixabay) for real audio previews."
+                        className="ml-2 rounded-full border border-amber-400/60 bg-amber-400/10 px-2 py-0.5 align-middle text-[9px] font-bold uppercase tracking-[0.18em] text-amber-200"
+                      >
+                        Demo
+                      </span>
+                    )}
                   </p>
                   <p className="text-xs uppercase tracking-[0.16em] text-slate-400">{track.artist}</p>
                 </div>

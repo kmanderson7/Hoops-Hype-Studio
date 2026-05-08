@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type { BeatMarker, HighlightSegment, MusicTrack, StudioState, OverlayConfig } from '../../state/useStudioState'
 import { api } from '../../lib/apiClient'
 
@@ -203,20 +204,32 @@ function LabeledInput({ label, value, onChange }: { label: string; value: string
 }
 
 function LogoUploader({ onUploaded }: { onUploaded: (url: string) => void }) {
+  const [progress, setProgress] = useState<number | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
   async function handleFile(file?: File) {
     if (!file) return
     const isValid = (file.type === 'image/png' || file.type === 'image/svg+xml') && file.size <= 1 * 1024 * 1024
     if (!isValid) {
-      alert('Logo must be PNG or SVG and ≤ 1MB')
+      setError('Logo must be PNG or SVG and ≤ 1MB')
       return
     }
+    setError(null)
     try {
       const { uploadUrl, key } = await api.createUploadUrl({ fileName: file.name, size: file.size, type: file.type, scope: 'logos' })
       await new Promise<void>((resolve, reject) => {
         const xhr = new XMLHttpRequest()
         xhr.open('PUT', uploadUrl, true)
-        xhr.onload = () => (xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error(String(xhr.status))))
-        xhr.onerror = () => reject(new Error('Upload error'))
+        xhr.upload.onloadstart = () => setProgress(0)
+        xhr.upload.onprogress = (ev) => {
+          if (ev.lengthComputable) setProgress(Math.round((ev.loaded / ev.total) * 100))
+        }
+        xhr.upload.onloadend = () => setProgress((p) => (p === null ? null : 100))
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) resolve()
+          else reject(new Error(`HTTP ${xhr.status}`))
+        }
+        xhr.onerror = () => reject(new Error('Upload network error'))
         xhr.setRequestHeader('content-type', file.type)
         xhr.send(file)
       })
@@ -224,8 +237,11 @@ function LogoUploader({ onUploaded }: { onUploaded: (url: string) => void }) {
       const publicBase = (import.meta as any).env?.VITE_PUBLIC_BUCKET_BASE as string | undefined
       const url = publicBase && key ? `${publicBase}/${key}` : key || ''
       onUploaded(url)
-    } catch (e) {
-      alert(`Logo upload failed: ${e}`)
+      // Clear the bar after a short beat so the user sees 100% before it disappears.
+      setTimeout(() => setProgress(null), 800)
+    } catch (e: any) {
+      setError(`Logo upload failed: ${e?.message || e}`)
+      setProgress(null)
     }
   }
   return (
@@ -237,6 +253,18 @@ function LogoUploader({ onUploaded }: { onUploaded: (url: string) => void }) {
         onChange={(e) => handleFile(e.target.files?.[0])}
         className="rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-slate-300"
       />
+      {progress !== null && (
+        <div className="mt-1 flex items-center gap-2">
+          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-800">
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-indigo-400 via-sky-400 to-emerald-400 transition-[width]"
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+          <span className="text-[11px] tabular-nums text-slate-400">{progress}%</span>
+        </div>
+      )}
+      {error && <span className="text-[11px] text-rose-400">{error}</span>}
     </label>
   )
 }

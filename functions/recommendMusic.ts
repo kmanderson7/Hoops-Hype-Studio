@@ -1,20 +1,31 @@
 import type { Handler } from '@netlify/functions'
 import { requireHmacNonce } from './_auth'
+import { log, captureException } from './_obs'
+import {
+  PixabayProvider,
+  scoreAndRankTracks,
+  buildFallbackTracks,
+  type EnergyProfile,
+  type TrackCandidate,
+} from '@hhs/providers'
 
 const {
   MUSIC_API_KEY = '',
   MUSIC_API_BASE_URL = '',
   GPU_WORKER_BASE_URL = '',
-  GPU_WORKER_TOKEN = ''
+  GPU_WORKER_TOKEN = '',
 } = process.env
 
 /**
  * AI-Powered Music Recommendation
  *
  * PRD Requirement: AI Music Intelligence Module (Section 6.4)
- * - Analyzes video audio energy profile
- * - Matches tracks by BPM, energy level, and mood
+ * - Analyzes video audio energy profile via Modal `/audio-analysis`
+ * - Matches Pixabay candidate tracks by BPM, energy level, and mood
  * - Returns top 3 ranked tracks with match scores
+ *
+ * If MUSIC_API_KEY is unset, falls back to a hardcoded demo set with silent
+ * audio + `fallback: true` so the UI can label them as demos.
  */
 export const handler: Handler = async (evt) => {
   try {
@@ -22,10 +33,15 @@ export const handler: Handler = async (evt) => {
     if (guard) return guard
 
     const body = evt.body ? JSON.parse(evt.body) : {}
-    const { assetId, playStyle, targetLength, proxyUrl } = body
+    const { assetId, playStyle, targetLength, proxyUrl, query } = body as {
+      assetId?: string
+      playStyle?: string
+      targetLength?: number
+      proxyUrl?: string
+      query?: string
+    }
 
-    // Step 1: Get audio energy profile from GPU worker
-    type EnergyProfile = { avgBpm: number; avgEnergy: number; peakMoments: number[]; energyCurve?: number[] }
+    // Step 1: Get audio energy profile from GPU worker.
     let energyProfile: EnergyProfile = { avgBpm: 135, avgEnergy: 0.75, peakMoments: [], energyCurve: [] }
 
     if (GPU_WORKER_BASE_URL && GPU_WORKER_TOKEN && (assetId || proxyUrl)) {
@@ -36,13 +52,13 @@ export const handler: Handler = async (evt) => {
           method: 'POST',
           headers: {
             'content-type': 'application/json',
-            authorization: `Bearer ${GPU_WORKER_TOKEN}`
+            authorization: `Bearer ${GPU_WORKER_TOKEN}`,
           },
           body: JSON.stringify({ assetId: assetId || 'demo', proxyUrl }),
           signal: controller.signal,
         })
         if (analysisRes.ok) {
-          const j = await analysisRes.json()
+          const j = (await analysisRes.json()) as Partial<EnergyProfile>
           energyProfile = {
             avgBpm: typeof j.avgBpm === 'number' ? j.avgBpm : 135,
             avgEnergy: typeof j.avgEnergy === 'number' ? j.avgEnergy : 0.75,
@@ -50,122 +66,53 @@ export const handler: Handler = async (evt) => {
             energyCurve: Array.isArray(j.energyCurve) ? j.energyCurve : [],
           }
         }
-      } catch (err) {
-        console.warn('Audio analysis failed, using defaults:', err)
+      } catch (err: any) {
+        // Soft fail: keep the default energy profile so we can still return
+        // ranked tracks. Logged so an unconfigured worker is visible in obs.
+        await log({ level: 'warn', msg: 'audio_analysis_failed', error: err?.message || String(err) })
       } finally {
         clearTimeout(timer)
       }
     }
 
-    // Step 2: Fetch candidate tracks from music API
-    const q = body?.query || 'trap sport hype'
-    const candidates: any[] = []
+    // Step 2: Fetch candidate tracks from the music provider.
+    let candidates: TrackCandidate[] = []
+    let usedFallback = false
 
     if (MUSIC_API_BASE_URL && MUSIC_API_KEY) {
+      const provider = new PixabayProvider(MUSIC_API_KEY, MUSIC_API_BASE_URL)
       const musicController = new AbortController()
       const musicTimer = setTimeout(() => musicController.abort(), 8_000)
       try {
-        const url = `${MUSIC_API_BASE_URL}?key=${encodeURIComponent(
-          MUSIC_API_KEY
-        )}&q=${encodeURIComponent(q)}&media_type=audio&per_page=10`
-
-        const res = await fetch(url, { signal: musicController.signal })
-        if (res.ok) {
-          const data = await res.json()
-          candidates.push(
-            ...(data?.hits || []).map((h: any) => ({
-              url: h?.audioURL || h?.url || '#',
-              title: h?.tags || 'Hype Track',
-              artist: h?.user || 'Unknown',
-              bpm: h?.bpm || 130,
-              mood: h?.mood || 'high energy',
-              energy: Math.min(1, Math.max(0.6, h?.energy || 0.85)),
-              duration: h?.duration || 180,
-              license: 'royalty-free'
-            }))
-          )
-        }
-      } catch {
-        // Fall through to defaults
+        const found = await provider.search({ query, perPage: 10, signal: musicController.signal })
+        // Provider returns Track[]; widen to TrackCandidate (artist + duration
+        // are extras kept on the same object).
+        candidates = found.map(
+          (t: any): TrackCandidate => ({
+            url: t.url,
+            title: t.title || 'Hype Track',
+            artist: t.artist || 'Unknown',
+            bpm: t.bpm ?? 130,
+            mood: t.mood || 'high energy',
+            energy: typeof t.energy === 'number' ? t.energy : 0.85,
+            duration: t.duration ?? 180,
+            license: t.license || 'royalty-free',
+          }),
+        )
+      } catch (err: any) {
+        await log({ level: 'warn', msg: 'music_provider_failed', error: err?.message || String(err) })
       } finally {
         clearTimeout(musicTimer)
       }
     }
 
-    // Add fallback tracks if no candidates
     if (candidates.length === 0) {
-      candidates.push(
-        { url: 'https://cdn.example/hype1.mp3', title: 'Fast Break', artist: 'Voltage', bpm: 140, mood: 'high energy', energy: 0.92, duration: 180, license: 'royalty-free' },
-        { url: 'https://cdn.example/hype2.mp3', title: 'Full Court Press', artist: 'Neon District', bpm: 128, mood: 'anthemic', energy: 0.88, duration: 170, license: 'royalty-free' },
-        { url: 'https://cdn.example/hype3.mp3', title: 'Skyline Lights', artist: 'City Edge', bpm: 135, mood: 'hybrid trap', energy: 0.85, duration: 195, license: 'royalty-free' }
-      )
+      candidates = buildFallbackTracks()
+      usedFallback = true
     }
 
-    // Step 3: Score each track using AI matching algorithm
-    const scored = candidates.map((track) => {
-      // BPM matching (±5 BPM tolerance per PRD)
-      const bpmDiff = Math.abs(track.bpm - energyProfile.avgBpm)
-      const bpmScore = 1.0 - Math.min(1, bpmDiff / 20)
-
-      // Energy level matching
-      const energyDiff = Math.abs(track.energy - energyProfile.avgEnergy)
-      const energyScore = 1.0 - energyDiff
-
-      // Duration matching (prefer tracks ≥ targetLength)
-      const durationScore = targetLength ? (track.duration >= targetLength ? 1.0 : 0.7) : 0.9
-
-      // Play style matching
-      let styleScore = 0.8
-      if (playStyle === 'guard' && track.bpm > 140) styleScore = 1.0
-      if (playStyle === 'big' && track.mood.includes('powerful')) styleScore = 1.0
-      if (playStyle === 'team' && track.mood.includes('anthemic')) styleScore = 0.95
-
-      // Weighted final score (PRD Section 6.4 music matching)
-      const matchScore = (
-        bpmScore * 0.35 +      // BPM most important
-        energyScore * 0.40 +   // Energy second most important
-        durationScore * 0.10 + // Duration less important
-        styleScore * 0.15      // Style matching
-      )
-
-      // Normalize mood to expected values
-      let normalizedMood = 'High Energy'
-      if (track.mood.toLowerCase().includes('trap')) normalizedMood = 'Hybrid Trap'
-      else if (track.mood.toLowerCase().includes('anthem')) normalizedMood = 'Anthemic'
-      else if (track.mood.toLowerCase().includes('electro') || track.mood.toLowerCase().includes('drive'))
-        normalizedMood = 'Electro Drive'
-
-      // Synthesize a deterministic 32-bin waveform shape that hints at mood + energy
-      const baseAmp = Math.min(1, Math.max(0.4, track.energy))
-      const moodPhase = normalizedMood === 'Hybrid Trap' ? 1.7 : normalizedMood === 'Anthemic' ? 0.5 : 1.1
-      const waveform = Array.from({ length: 32 }, (_, idx) => {
-        const v = baseAmp + Math.sin((idx / 32) * Math.PI * 4 + moodPhase) * 0.18 + (idx % 4 === 0 ? 0.08 : 0)
-        return Math.min(1, Math.max(0.2, v))
-      })
-
-      // Pick a plausible key based on mood — purely cosmetic surface for the UI
-      const moodKey =
-        normalizedMood === 'Hybrid Trap' ? 'F# Minor' :
-        normalizedMood === 'Anthemic' ? 'C Major' :
-        normalizedMood === 'Electro Drive' ? 'A Minor' : 'E Minor'
-
-      return {
-        url: track.url,
-        title: track.title,
-        artist: track.artist || 'Unknown',
-        bpm: track.bpm,
-        mood: normalizedMood,
-        energy: Math.round(track.energy * 100),
-        matchScore: Math.round(matchScore * 100),
-        license: track.license,
-        key: moodKey,
-        waveform,
-      }
-    })
-
-    // Step 4: Sort by match score and return top 3 (PRD Section 6.4)
-    scored.sort((a, b) => b.matchScore - a.matchScore)
-    const topTracks = scored.slice(0, 3)
+    // Step 3: Score and rank.
+    const topTracks = scoreAndRankTracks(candidates, energyProfile, { playStyle, targetLength })
 
     return {
       statusCode: 200,
@@ -175,12 +122,14 @@ export const handler: Handler = async (evt) => {
         avgEnergy: energyProfile.avgEnergy,
         peakMoments: energyProfile.peakMoments,
         energyCurve: energyProfile.energyCurve || [],
+        fallback: usedFallback,
       }),
     }
   } catch (e: any) {
+    await captureException(e, { where: 'recommendMusic' })
     return {
       statusCode: 500,
-      body: JSON.stringify({ title: 'Server error', detail: e?.message || String(e) })
+      body: JSON.stringify({ title: 'Server error', detail: e?.message || String(e) }),
     }
   }
 }

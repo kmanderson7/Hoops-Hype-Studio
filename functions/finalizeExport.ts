@@ -19,7 +19,7 @@ export const handler: Handler = async (evt) => {
     const body = JSON.parse(evt.body || '{}') as { renderJobId?: string }
     const id = body.renderJobId
     if (!id) return { statusCode: 400, body: JSON.stringify({ title: 'Invalid input', detail: 'renderJobId required' }) }
-    const job = await (getRenderJob as any)(id)
+    const job = await getRenderJob(id)
     if (!job) return { statusCode: 404, body: JSON.stringify({ title: 'Not found' }) }
     if (!job.downloads || job.downloads.length === 0) {
       // Render hasn't completed yet (or worker failed). Don't surface fake URLs.

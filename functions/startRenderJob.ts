@@ -25,7 +25,7 @@ export const handler: Handler = async (evt) => {
     if (cc.blocked) {
       return { statusCode: 429, body: JSON.stringify({ title: 'Too Many Requests', detail: 'RENDER_CONCURRENCY_LIMIT' }) }
     }
-    const job = await (createRenderJob as any)({ assetId: body.assetId, trackId: body.trackId, presets: presetIds })
+    const job = await createRenderJob({ assetId: body.assetId, trackId: body.trackId, presets: presetIds })
     if (ip) await setRenderLock(ip, job.id, 15 * 60)
     await log({ level: 'info', msg: 'render_job_created', jobId: job.id, presets: presetIds })
 
@@ -38,7 +38,7 @@ export const handler: Handler = async (evt) => {
       // first poll surfaces a clear "GPU worker not configured" message
       // instead of an indefinite 98% stall.
       await log({ level: 'error', msg: 'render_no_worker_env', jobId: job.id })
-      await (setRenderJobError as any)(job.id, 'no_worker_configured').catch(() => {})
+      await setRenderJobError(job.id, 'no_worker_configured').catch(() => {})
       if (ip) await clearRenderLock(ip)
       return { statusCode: 200, body: JSON.stringify({ renderJobId: job.id, jobId: job.id }) }
     }
@@ -67,14 +67,14 @@ export const handler: Handler = async (evt) => {
           // feedback instead of staring at 99% for 14 minutes.
           const detail = await res.text().catch(() => '')
           await log({ level: 'error', msg: 'render_bg_kickoff_failed', jobId: job.id, status: res.status, detail: detail.slice(0, 500) })
-          await (setRenderJobError as any)(job.id, `kickoff_${res.status}`)
+          await setRenderJobError(job.id, `kickoff_${res.status}`)
           if (ip) await clearRenderLock(ip)
         }
       } catch (e: any) {
         // Kickoff failed — the bg fn will never run, so release the lock now
         // so the user isn't stuck for 15 minutes on a job that never dispatched.
         if (ip) await clearRenderLock(ip)
-        await (setRenderJobError as any)(job.id, 'kickoff_exception').catch(() => {})
+        await setRenderJobError(job.id, 'kickoff_exception').catch(() => {})
         await captureException(e, { where: 'startRenderJob:bg_kickoff' })
       }
     }

@@ -44,6 +44,8 @@ export interface MusicTrack {
   key: string
   previewUrl: string
   waveform: number[]
+  /** True when the track is a stub demo (silent audio) — UI shows a "Demo" badge. */
+  fallback?: boolean
 }
 
 export interface ExportPreset {

@@ -1,4 +1,5 @@
 import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
+import { useState } from 'react';
 import { api } from '../../lib/apiClient';
 const aspectOptions = [
     { id: 'landscape', label: '16:9 Landscape', description: 'YouTube, Hudl, Team review' },
@@ -15,21 +16,35 @@ function LabeledInput({ label, value, onChange }) {
     return (_jsxs("label", { className: "flex flex-col gap-1", children: [_jsx("span", { className: "text-xs uppercase tracking-[0.16em] text-slate-500", children: label }), _jsx("input", { value: value, onChange: (e) => onChange(e.target.value), className: "rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 outline-none focus:border-indigo-400", placeholder: label })] }));
 }
 function LogoUploader({ onUploaded }) {
+    const [progress, setProgress] = useState(null);
+    const [error, setError] = useState(null);
     async function handleFile(file) {
         if (!file)
             return;
         const isValid = (file.type === 'image/png' || file.type === 'image/svg+xml') && file.size <= 1 * 1024 * 1024;
         if (!isValid) {
-            alert('Logo must be PNG or SVG and ≤ 1MB');
+            setError('Logo must be PNG or SVG and ≤ 1MB');
             return;
         }
+        setError(null);
         try {
             const { uploadUrl, key } = await api.createUploadUrl({ fileName: file.name, size: file.size, type: file.type, scope: 'logos' });
             await new Promise((resolve, reject) => {
                 const xhr = new XMLHttpRequest();
                 xhr.open('PUT', uploadUrl, true);
-                xhr.onload = () => (xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error(String(xhr.status))));
-                xhr.onerror = () => reject(new Error('Upload error'));
+                xhr.upload.onloadstart = () => setProgress(0);
+                xhr.upload.onprogress = (ev) => {
+                    if (ev.lengthComputable)
+                        setProgress(Math.round((ev.loaded / ev.total) * 100));
+                };
+                xhr.upload.onloadend = () => setProgress((p) => (p === null ? null : 100));
+                xhr.onload = () => {
+                    if (xhr.status >= 200 && xhr.status < 300)
+                        resolve();
+                    else
+                        reject(new Error(`HTTP ${xhr.status}`));
+                };
+                xhr.onerror = () => reject(new Error('Upload network error'));
                 xhr.setRequestHeader('content-type', file.type);
                 xhr.send(file);
             });
@@ -37,10 +52,13 @@ function LogoUploader({ onUploaded }) {
             const publicBase = import.meta.env?.VITE_PUBLIC_BUCKET_BASE;
             const url = publicBase && key ? `${publicBase}/${key}` : key || '';
             onUploaded(url);
+            // Clear the bar after a short beat so the user sees 100% before it disappears.
+            setTimeout(() => setProgress(null), 800);
         }
         catch (e) {
-            alert(`Logo upload failed: ${e}`);
+            setError(`Logo upload failed: ${e?.message || e}`);
+            setProgress(null);
         }
     }
-    return (_jsxs("label", { className: "flex flex-col gap-1", children: [_jsx("span", { className: "text-xs uppercase tracking-[0.16em] text-slate-500", children: "Upload Logo" }), _jsx("input", { type: "file", accept: "image/png,image/svg+xml", onChange: (e) => handleFile(e.target.files?.[0]), className: "rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-slate-300" })] }));
+    return (_jsxs("label", { className: "flex flex-col gap-1", children: [_jsx("span", { className: "text-xs uppercase tracking-[0.16em] text-slate-500", children: "Upload Logo" }), _jsx("input", { type: "file", accept: "image/png,image/svg+xml", onChange: (e) => handleFile(e.target.files?.[0]), className: "rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-slate-300" }), progress !== null && (_jsxs("div", { className: "mt-1 flex items-center gap-2", children: [_jsx("div", { className: "h-1.5 flex-1 overflow-hidden rounded-full bg-slate-800", children: _jsx("div", { className: "h-full rounded-full bg-gradient-to-r from-indigo-400 via-sky-400 to-emerald-400 transition-[width]", style: { width: `${progress}%` } }) }), _jsxs("span", { className: "text-[11px] tabular-nums text-slate-400", children: [progress, "%"] })] })), error && _jsx("span", { className: "text-[11px] text-rose-400", children: error })] }));
 }

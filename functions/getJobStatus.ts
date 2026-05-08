@@ -12,7 +12,7 @@ export const handler: Handler = async (evt) => {
     const jobId = body?.jobId || query.jobId
     if (!jobId) return { statusCode: 400, body: JSON.stringify({ title: 'Invalid input', detail: 'jobId required' }) }
 
-    const state = await (getRenderJobStatus as any)(jobId)
+    const state = await getRenderJobStatus(jobId)
     if (!state) return { statusCode: 404, body: JSON.stringify({ title: 'Not found' }) }
 
     // Overall progress is averaged; payload includes downloads when complete

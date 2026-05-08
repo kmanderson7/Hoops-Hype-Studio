@@ -1,6 +1,7 @@
 import type { Handler } from '@netlify/functions'
 import { presignS3Url } from './_s3Presign'
 import { requireHmacNonce } from './_auth'
+import { log, captureException } from './_obs'
 
 const {
   GPU_WORKER_BASE_URL = '',
@@ -45,7 +46,11 @@ export const handler: Handler = async (evt) => {
         if (etag && etag.length === 32 && etag !== body.md5) {
           return { statusCode: 400, body: JSON.stringify({ title: 'Integrity error', detail: 'MD5_MISMATCH' }) }
         }
-      } catch {}
+      } catch (e: any) {
+        // MD5 verification is best-effort — a HEAD failure shouldn't block
+        // ingest. Log so the operator can spot a bucket-perm issue.
+        await log({ level: 'warn', msg: 'md5_check_failed', key: body.key, error: e?.message || String(e) })
+      }
     }
 
     // Presign GET for source object so worker can download
@@ -84,6 +89,7 @@ export const handler: Handler = async (evt) => {
       clearTimeout(timer)
     }
   } catch (e: any) {
+    await captureException(e, { where: 'ingestAsset' })
     return { statusCode: 500, body: JSON.stringify({ title: 'Server error', detail: e?.message || String(e) }) }
   }
 }

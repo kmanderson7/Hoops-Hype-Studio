@@ -1,5 +1,6 @@
 import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { StudioStepper } from './components/StudioStepper';
 import { InsightsPanel } from './components/InsightsPanel';
 import { UploadStage } from './components/stages/UploadStage';
@@ -9,12 +10,14 @@ import { EditorStage } from './components/stages/EditorStage';
 import { ExportStage } from './components/stages/ExportStage';
 import { useStudioState } from './state/useStudioState';
 import { api } from './lib/apiClient';
+import { assembleEdit, toSeconds as toSecondsFromTs } from '@hhs/core';
+import { buildMockHighlights, buildMockBeatMarkers, buildMockEnergyCurve, buildMockTracks, buildMockInsights, } from './data/mockData';
 export default function App() {
     const [isRendering, setIsRendering] = useState(false);
     const renderTimers = useRef([]);
     const assetIdRef = useRef(undefined);
     const proxyUrlRef = useRef(undefined);
-    const { assetId, proxyUrl, currentStage, stageStatus, fileInfo, ingestUpload, tasks, processingProgress, highlights, beatMarkers, energyCurve, musicTracks, selectedTrackId, exportPresets, exportDownloads, renderStatus, insights, updateTask, setProcessingProgress, setStageStatus, setCurrentStage, setHighlights, setBeatMarkers, setEnergyCurve, setMusicTracks, selectTrack, markPresetProgress, togglePreset, setRenderStatus, setExportDownloads, overlayConfig, setOverlayConfig, setInsights, setAssetInfo, targetJersey, setTargetJersey, uploadRunId, reset, } = useStudioState((state) => ({
+    const { assetId, proxyUrl, currentStage, stageStatus, fileInfo, ingestUpload, tasks, processingProgress, highlights, beatMarkers, energyCurve, musicTracks, selectedTrackId, exportPresets, exportDownloads, renderStatus, insights, updateTask, setProcessingProgress, setStageStatus, setCurrentStage, setHighlights, setBeatMarkers, setEnergyCurve, setMusicTracks, selectTrack, markPresetProgress, togglePreset, setRenderStatus, setExportDownloads, overlayConfig, setOverlayConfig, setInsights, setAssetInfo, targetJersey, setTargetJersey, uploadRunId, reset, } = useStudioState(useShallow((state) => ({
         assetId: state.assetId,
         proxyUrl: state.proxyUrl,
         currentStage: state.currentStage,
@@ -53,9 +56,12 @@ export default function App() {
         setTargetJersey: state.setTargetJersey,
         uploadRunId: state.uploadRunId,
         reset: state.reset,
-    }));
+    })));
     assetIdRef.current = assetId;
     proxyUrlRef.current = proxyUrl;
+    // Hoisted above the analysis effect so the new track-bound beat effect
+    // can depend on `selectedTrack?.previewUrl` without forward-reference woes.
+    const selectedTrack = useMemo(() => musicTracks.find((track) => track.id === selectedTrackId), [musicTracks, selectedTrackId]);
     useEffect(() => {
         if (!uploadRunId)
             return;
@@ -68,10 +74,43 @@ export default function App() {
             setProcessingProgress(progressValue);
         }, 450);
         (async () => {
+            const fallbackNotes = [];
+            // Offline dev mode: skip every API call, seed the store from
+            // `data/mockData.ts`, and short-circuit straight to the music stage.
+            // Useful for local UI work without Modal/Pixabay creds.
+            if (import.meta.env.VITE_USE_MOCK_DATA === 'true') {
+                const mockHi = buildMockHighlights();
+                const mockBeats = buildMockBeatMarkers();
+                const mockCurve = buildMockEnergyCurve();
+                const mockTracks = buildMockTracks();
+                const mockInsights = buildMockInsights();
+                setHighlights(mockHi);
+                setBeatMarkers(mockBeats);
+                setEnergyCurve(mockCurve);
+                setMusicTracks(mockTracks);
+                setInsights({
+                    ...mockInsights,
+                    notes: [...mockInsights.notes, 'Mock-data mode (VITE_USE_MOCK_DATA=true) — no API calls were made.'],
+                });
+                updateTask('highlight-detection', { status: 'done', progress: 100 });
+                updateTask('beat-sync', { status: 'done', progress: 100 });
+                updateTask('music-intel', { status: 'done', progress: 100 });
+                progressValue = 1;
+                setProcessingProgress(progressValue);
+                setStageStatus('analysis', 'complete');
+                setStageStatus('music', 'active');
+                setCurrentStage('music');
+                setRenderStatus('Running with mock data (VITE_USE_MOCK_DATA=true).');
+                window.clearInterval(tick);
+                return;
+            }
             try {
                 // Step 1: Highlights
                 updateTask('highlight-detection', { status: 'running', progress: 10 });
                 const hi = await api.detectHighlights({ videoUrl: proxyUrlRef.current || fileInfo?.previewUrl });
+                if (hi.fallback) {
+                    fallbackNotes.push('Highlights are demo data — configure GPU_WORKER_BASE_URL for real GPT-4o detection.');
+                }
                 const mapped = hi.segments?.map((s, i) => {
                     if (s?.timestamp && s?.action)
                         return s;
@@ -97,6 +136,9 @@ export default function App() {
                 // Step 2: Beats — emphasize downbeats (every 4th beat) when no explicit downbeat array is provided
                 updateTask('beat-sync', { status: 'running', progress: 20 });
                 const beats = await api.detectBeats({ assetId: assetIdRef.current, trackId: selectedTrackId, trackUrl: selectedTrack?.previewUrl, previewUrl: selectedTrack?.previewUrl });
+                if (beats.fallback) {
+                    fallbackNotes.push('Beat grid is the canned 130 BPM stub — configure GPU_WORKER_BASE_URL for librosa-based BPM/beat detection.');
+                }
                 const downbeatSet = new Set((beats.downbeats || []).map((t) => t.toFixed(3)));
                 const markers = beats.beatGrid.map((t, idx) => {
                     const isDownbeat = downbeatSet.size > 0 ? downbeatSet.has(t.toFixed(3)) : idx % 4 === 0;
@@ -107,6 +149,9 @@ export default function App() {
                 // Step 3: Music — also pulls audio energy profile so we can render an honest momentum arc
                 updateTask('music-intel', { status: 'running', progress: 25 });
                 const rec = await api.recommendMusic({ assetId: assetIdRef.current, proxyUrl: proxyUrlRef.current });
+                if (rec.fallback) {
+                    fallbackNotes.push('Music is demo silent audio — configure MUSIC_API_KEY (Pixabay) for real previews.');
+                }
                 const tracks = rec.tracks.map((t, i) => ({
                     id: `track-${i + 1}`,
                     title: t.title,
@@ -122,6 +167,7 @@ export default function App() {
                     waveform: Array.isArray(t.waveform) && t.waveform.length > 0
                         ? t.waveform.slice(0, 32).map((v) => Math.min(1, Math.max(0.25, v)))
                         : Array.from({ length: 32 }, (_, idx) => Math.min(1, Math.max(0.25, 0.7 + Math.sin(idx / 3) * 0.15))),
+                    fallback: !!t.fallback || !!rec.fallback,
                 }));
                 setMusicTracks(tracks);
                 // Use server-derived energy curve when present (audio analysis from worker), else synthesize from beats
@@ -145,8 +191,12 @@ export default function App() {
                         mapped[0]?.descriptor ? `Top moment: ${mapped[0].descriptor}` : 'Highlights detected',
                         `Beat grid length: ${markers.length} (${downbeatCount} downbeats)`,
                         tracks[0]?.title ? `Top track match: ${tracks[0].title} @ ${tracks[0].bpm} BPM` : 'Music ranked by BPM/energy fit',
+                        ...fallbackNotes,
                     ],
                 });
+                if (fallbackNotes.length > 0) {
+                    setRenderStatus('Analysis used stub data for one or more steps. Open System Health (Export panel) for details.');
+                }
                 progressValue = 1;
                 setProcessingProgress(progressValue);
                 setStageStatus('analysis', 'complete');
@@ -175,7 +225,44 @@ export default function App() {
         setCurrentStage,
         setRenderStatus,
     ]);
-    const selectedTrack = useMemo(() => musicTracks.find((track) => track.id === selectedTrackId), [musicTracks, selectedTrackId]);
+    // Re-run beat detection once the user picks a track. The first-pass
+    // detection in the analysis effect runs before track selection so it
+    // can only return the canned 130 BPM grid; here we feed the chosen
+    // track's previewUrl to the worker for a real BPM/beatGrid/downbeats.
+    // The `cancelled` guard avoids race conditions when the user clicks
+    // through several tracks quickly.
+    useEffect(() => {
+        if (!selectedTrackId || !selectedTrack?.previewUrl)
+            return;
+        // Skip the silent demo WAV — librosa on silence is meaningless.
+        if (selectedTrack.previewUrl.startsWith('data:'))
+            return;
+        let cancelled = false;
+        (async () => {
+            try {
+                const beats = await api.detectBeats({
+                    assetId: assetIdRef.current,
+                    trackId: selectedTrackId,
+                    trackUrl: selectedTrack.previewUrl,
+                    previewUrl: selectedTrack.previewUrl,
+                });
+                if (cancelled)
+                    return;
+                const downbeatSet = new Set((beats.downbeats || []).map((t) => t.toFixed(3)));
+                const markers = beats.beatGrid.map((t, idx) => {
+                    const isDownbeat = downbeatSet.size > 0 ? downbeatSet.has(t.toFixed(3)) : idx % 4 === 0;
+                    return { id: `beat-${idx}`, time: t, intensity: isDownbeat ? 0.95 : 0.55 };
+                });
+                setBeatMarkers(markers);
+            }
+            catch (err) {
+                console.warn('[detectBeats track-bound] failed; keeping first-pass grid', err);
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [selectedTrackId, selectedTrack?.previewUrl, setBeatMarkers]);
     const handleFileAccepted = async (file, previewUrl) => {
         try {
             updateTask('chunk-encoder', { status: 'running', progress: 5 });
@@ -330,71 +417,41 @@ export default function App() {
         enabled.forEach((p) => markPresetProgress(p.id, 5));
         (async () => {
             try {
-                // Build beat-aligned cut list (±0.3s)
-                const toSeconds = (ts) => {
-                    const mIdx = ts.indexOf('m');
-                    if (mIdx > -1) {
-                        const m = parseInt(ts.slice(0, mIdx).trim() || '0', 10);
-                        const s = parseInt(ts.slice(mIdx + 1).trim() || '0', 10);
-                        return Math.max(0, m * 60 + s);
-                    }
-                    const n = parseInt(ts.replace(/[^0-9]/g, '') || '0', 10);
-                    return Math.max(0, n);
-                };
-                const grid = beatMarkers.map((b) => b.time).sort((a, b) => a - b);
-                const snap = (t) => {
-                    if (grid.length === 0)
-                        return t;
-                    let best = grid[0];
-                    let diff = Math.abs(best - t);
-                    for (let i = 1; i < grid.length; i++) {
-                        const d = Math.abs(grid[i] - t);
-                        if (d < diff) {
-                            diff = d;
-                            best = grid[i];
-                        }
-                    }
-                    return diff <= 0.3 ? best : t;
-                };
+                // Build beat-aligned cut list (±0.3s) via the shared @hhs/core engine.
+                // Filter to selected jersey first so the targetLength budget is spent
+                // on the right plays.
                 const filteredHighlights = targetJersey
                     ? highlights.filter((h) => (h.jerseyNumbers || []).includes(targetJersey))
                     : highlights;
-                // Action-aware cut length: ESPN holds dunks longer (savor the impact),
-                // snaps quicker on threes/passes (rhythm), holds blocks for the reaction.
-                // Multipliers are applied to the detected scene clipDuration.
-                const ACTION_DURATION_MULT = {
-                    Dunk: 1.5, // hold the slam + reaction
-                    Block: 1.35, // hold the rejection
-                    Three: 1.2, // (legacy alias, unlikely)
-                    'Three Pointer': 1.2,
-                    Steal: 1.15,
-                    Layup: 1.1,
-                    Rebound: 0.95,
-                    Assist: 1.0,
-                    Pass: 0.85,
-                    Foul: 0.9,
-                    Other: 1.0,
-                };
-                const MIN_CLIP = 1.0;
-                const MAX_CLIP = 5.0;
-                const segments = filteredHighlights.slice(0, 12).map((h) => {
-                    const s0 = toSeconds(h.timestamp);
-                    const start = snap(s0);
-                    const baseDur = h.clipDuration || 2;
-                    const mult = ACTION_DURATION_MULT[h.action] ?? 1.0;
-                    const tunedDur = Math.max(MIN_CLIP, Math.min(MAX_CLIP, baseDur * mult));
-                    const end = Math.max(start + 0.8, start + tunedDur);
-                    // Impact lands a bit later for held actions (dunk's apex, block's swat),
-                    // earlier for rhythm cuts (steal, three release).
-                    const impactBias = mult >= 1.3 ? 0.4 : mult >= 1.15 ? 0.3 : 0.2;
-                    const impact = Math.min(end, start + Math.min(impactBias * tunedDur, tunedDur / 2));
-                    const bbox = targetJersey && h.featuredBbox && h.featuredBbox.length >= 2
+                // Map UI HighlightSegment → core Segment shape so assembleEdit can do
+                // the heavy lifting (sort by score, action multipliers, beat snap,
+                // clamp, impact bias, target-length cap).
+                const inputSegments = filteredHighlights.map((h) => ({
+                    id: h.id,
+                    start: toSecondsFromTs(h.timestamp),
+                    end: toSecondsFromTs(h.timestamp) + (h.clipDuration || 2),
+                    label: h.action,
+                    action: h.action,
+                    confidence: h.confidence,
+                    score: h.score,
+                    // Pass through bbox only when tracking is locked on a player.
+                    bbox: targetJersey && h.featuredBbox && h.featuredBbox.length >= 2
                         ? h.featuredBbox
-                        : undefined;
-                    // Forward action so the worker can key SFX/voiceover off it.
-                    const base = { start, end, impact, action: h.action };
-                    if (bbox)
-                        base.bbox = bbox;
+                        : undefined,
+                }));
+                const grid = beatMarkers.map((b) => b.time);
+                const tunedSegments = assembleEdit(inputSegments, 60, grid);
+                // Drop bbox unless tracking is locked (stripping undefined keeps the
+                // payload lean for the GPU worker).
+                const segments = tunedSegments.map((s) => {
+                    const base = {
+                        start: s.start,
+                        end: s.end,
+                        impact: s.impact,
+                        action: s.action,
+                    };
+                    if (s.bbox)
+                        base.bbox = s.bbox;
                     return base;
                 });
                 const payload = {
@@ -534,7 +591,11 @@ export default function App() {
                         msg = `Failed to start render: ${parsed.title}${parsed.detail ? ` (${parsed.detail})` : ''}`;
                     }
                 }
-                catch { }
+                catch (parseErr) {
+                    // Server returned a non-JSON 5xx body. Useful when Netlify itself
+                    // is throwing (e.g. function bundle error — the body is HTML).
+                    console.warn('[render-error] non-JSON response from startRenderJob', parseErr, raw);
+                }
                 setRenderStatus(msg);
                 setIsRendering(false);
             }

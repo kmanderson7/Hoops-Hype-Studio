@@ -42,12 +42,17 @@ export const handler: Handler = async (evt) => {
       }
     }
 
-    // Fallback stub
+    // Fallback stub. Carries `fallback: true` so the UI can label demo data
+    // and surface "configure GPU_WORKER_BASE_URL" guidance instead of letting
+    // the user think these are real detections.
     const segments = [
       { id: 's1', start: 1.0, end: 2.6, label: 'dunk', confidence: 0.9, score: 0.92 },
       { id: 's2', start: 5.2, end: 7.4, label: 'three', confidence: 0.85, score: 0.88 },
     ]
-    return { statusCode: 200, body: JSON.stringify({ segments, proxyUrl: body.videoUrl, thumbnails: [] }) }
+    return {
+      statusCode: 200,
+      body: JSON.stringify({ segments, proxyUrl: body.videoUrl, thumbnails: [], fallback: true }),
+    }
   } catch (e: any) {
     await captureException(e, { where: 'detectHighlights' })
     return { statusCode: 500, body: JSON.stringify({ title: 'Server error', detail: e?.message || String(e) }) }

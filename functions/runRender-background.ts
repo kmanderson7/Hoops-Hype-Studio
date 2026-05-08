@@ -38,7 +38,7 @@ export const handler: Handler = async (evt) => {
   try {
     if (!GPU_WORKER_BASE_URL || !GPU_WORKER_TOKEN) {
       await log({ level: 'warn', msg: 'render_background_no_worker' })
-      if (body.jobId) await (setRenderJobError as any)(body.jobId, 'no_worker_configured')
+      if (body.jobId) await setRenderJobError(body.jobId, 'no_worker_configured')
       return { statusCode: 200, body: '' }
     }
 
@@ -48,7 +48,7 @@ export const handler: Handler = async (evt) => {
     }
 
     await log({ level: 'info', msg: 'render_background_start', jobId: body.jobId })
-    await (setRenderJobStage as any)(body.jobId, 'dispatched').catch(() => {})
+    await setRenderJobStage(body.jobId, 'dispatched').catch(() => {})
 
     // Hard cap on Modal /render. Modal's own @app.function(timeout=900) at
     // workers/modal/modal_app.py:1764 gives the worker 15 min; the broadcast-polish
@@ -62,7 +62,7 @@ export const handler: Handler = async (evt) => {
     let res: Response
     const t0 = Date.now()
     await log({ level: 'info', msg: 'render_background_modal_call_start', jobId: body.jobId, presetCount: (body.presets || []).length, hasTrackUrl: !!body.trackUrl, timeoutMs: RENDER_TIMEOUT_MS })
-    await (setRenderJobStage as any)(body.jobId, 'encoding').catch(() => {})
+    await setRenderJobStage(body.jobId, 'encoding').catch(() => {})
     try {
       res = await fetch(`${GPU_WORKER_BASE_URL}/render`, {
         method: 'POST',
@@ -81,7 +81,7 @@ export const handler: Handler = async (evt) => {
     } catch (e: any) {
       const aborted = e?.name === 'AbortError'
       await log({ level: 'error', msg: aborted ? 'render_background_modal_timeout' : 'render_background_fetch_error', jobId: body.jobId, detail: e?.message || String(e), elapsed_ms: Date.now() - t0 })
-      await (setRenderJobError as any)(body.jobId, aborted ? 'modal_timeout' : `fetch_${e?.message || 'error'}`)
+      await setRenderJobError(body.jobId, aborted ? 'modal_timeout' : `fetch_${e?.message || 'error'}`)
       return { statusCode: 200, body: '' }
     } finally {
       clearTimeout(timer)
@@ -91,7 +91,7 @@ export const handler: Handler = async (evt) => {
     if (!res.ok) {
       const errText = await res.text().catch(() => '')
       await log({ level: 'error', msg: 'render_background_modal_error', jobId: body.jobId, status: res.status, detail: errText.slice(0, 500) })
-      await (setRenderJobError as any)(body.jobId, `modal_${res.status}`)
+      await setRenderJobError(body.jobId, `modal_${res.status}`)
       return { statusCode: 200, body: '' }
     }
 
@@ -100,22 +100,22 @@ export const handler: Handler = async (evt) => {
       const tWrite = Date.now()
       await log({ level: 'info', msg: 'render_background_set_downloads_start', jobId: body.jobId, count: data.outputs.length })
       try {
-        await (setRenderJobDownloads as any)(body.jobId, data.outputs)
+        await setRenderJobDownloads(body.jobId, data.outputs)
       } catch (e: any) {
         await log({ level: 'error', msg: 'render_background_set_downloads_error', jobId: body.jobId, detail: e?.message || String(e), elapsed_ms: Date.now() - tWrite })
-        await (setRenderJobError as any)(body.jobId, 'persist_failed')
+        await setRenderJobError(body.jobId, 'persist_failed')
         return { statusCode: 200, body: '' }
       }
       await log({ level: 'info', msg: 'render_background_set_downloads_done', jobId: body.jobId, count: data.outputs.length, elapsed_ms: Date.now() - tWrite })
       await log({ level: 'info', msg: 'render_background_done', jobId: body.jobId, count: data.outputs.length })
     } else {
       await log({ level: 'warn', msg: 'render_background_no_outputs', jobId: body.jobId })
-      await (setRenderJobError as any)(body.jobId, 'no_outputs')
+      await setRenderJobError(body.jobId, 'no_outputs')
     }
     return { statusCode: 200, body: '' }
   } catch (e: any) {
     await captureException(e, { where: 'runRender-background' })
-    if (body.jobId) await (setRenderJobError as any)(body.jobId, e?.message || 'exception').catch(() => {})
+    if (body.jobId) await setRenderJobError(body.jobId, e?.message || 'exception').catch(() => {})
     return { statusCode: 200, body: '' }
   } finally {
     // Always release the per-IP render lock so the user can start another
