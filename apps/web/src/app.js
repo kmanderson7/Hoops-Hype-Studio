@@ -329,19 +329,18 @@ export default function App() {
                 xhr.setRequestHeader('content-type', file.type);
                 xhr.send(file);
             });
-            // Seed proxyUrl with the presigned GET on the upload itself BEFORE
-            // ingestUpload triggers the analysis effect. This ensures the analysis
-            // pipeline (detectHighlights / detectBeats / recommendMusic) gets a
-            // real https:// URL Modal can fetch — without this, it would race the
-            // ingest call and end up with the local blob: URL, falling through to
-            // the stub branch and showing "configure GPU_WORKER_BASE_URL" even
-            // though the worker is fully wired up.
-            if (newAssetId && downloadUrl) {
-                setAssetInfo({ assetId: newAssetId, proxyUrl: downloadUrl });
-            }
-            // Start analysis pipeline immediately; Modal /ingest runs in background
-            // to generate the smaller 720p proxy used by the editor preview later.
-            ingestUpload({ file, previewUrl });
+            // Pass assetId + the presigned GET URL through ingestUpload so they
+            // land in the same atomic state update that fires the analysis effect.
+            // Previously we called setAssetInfo before ingestUpload, but ingestUpload
+            // does a full `set()` that included `assetId: undefined / proxyUrl:
+            // undefined` to "clear prior session" — which silently undid the seed
+            // and left render with assetId=undefined, hitting Modal's pydantic 422.
+            ingestUpload({
+                file,
+                previewUrl,
+                assetId: newAssetId,
+                proxyUrl: downloadUrl,
+            });
             if (newAssetId && key) {
                 api.ingestAsset({ assetId: newAssetId, key })
                     .then(ingest => {

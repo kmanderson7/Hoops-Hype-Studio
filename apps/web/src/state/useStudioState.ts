@@ -119,7 +119,7 @@ export interface StudioState {
     crowdEnergy: number
     notes: string[]
   }
-  ingestUpload: (payload: { file: File; previewUrl: string }) => void
+  ingestUpload: (payload: { file: File; previewUrl: string; assetId?: string; proxyUrl?: string }) => void
   setAssetInfo: (info: { assetId?: string; proxyUrl?: string }) => void
   updateTask: (taskId: string, partial: Partial<TaskLog>) => void
   setProcessingProgress: (value: number) => void
@@ -238,7 +238,7 @@ export const useStudioState = create<StudioState>((set) => ({
     crowdEnergy: 0,
     notes: [],
   },
-  ingestUpload: ({ file, previewUrl }) =>
+  ingestUpload: ({ file, previewUrl, assetId, proxyUrl }) =>
     set(() => {
       const sizeMB = Math.max(file.size / (1024 * 1024), 1)
       const durationSeconds = Math.min(Math.max(sizeMB * 1.35, 95), 240)
@@ -260,9 +260,12 @@ export const useStudioState = create<StudioState>((set) => ({
           fps: 60,
           previewUrl,
         },
-        // Clear prior asset/proxy until ingest returns
-        assetId: undefined,
-        proxyUrl: undefined,
+        // Asset metadata is set atomically here so the analysis effect
+        // (which fires when uploadRunId changes) sees a real assetId/proxyUrl
+        // immediately. Caller passes the new values; we don't reset to
+        // undefined or we'd race the effect to render-time.
+        assetId,
+        proxyUrl,
         processingProgress: 0,
         tasks: baseTasks.map((task) => ({ ...task, status: 'queued', progress: 0 })),
         currentStage: 'analysis',
