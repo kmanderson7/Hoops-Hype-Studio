@@ -46,8 +46,27 @@ export const handler: Handler = async (evt) => {
       contentType: body.type,
     })
 
+    // GET URL on the same key, returned immediately so the frontend can hand
+    // a real https:// URL to detectHighlights / detectBeats / recommendMusic
+    // without waiting for Modal /ingest's 720p re-encode. Without this, those
+    // analysis calls receive a `blob:` URL (the browser preview) which Modal
+    // can't fetch — every detection call falls through to its stub branch and
+    // the user sees "configure GPU_WORKER_BASE_URL" in the InsightsPanel even
+    // though the worker is fully configured. 1-hour expiry covers the entire
+    // analysis pipeline with margin.
+    const downloadUrl = presignS3Url({
+      method: 'GET',
+      bucket: STORAGE_BUCKET,
+      key,
+      region: STORAGE_REGION,
+      accessKeyId: STORAGE_ACCESS_KEY,
+      secretAccessKey: STORAGE_SECRET_KEY,
+      endpoint: STORAGE_ENDPOINT,
+      expiresIn: 3600,
+    })
+
     console.log(JSON.stringify({ level: 'info', msg: 'presigned_url_issued', assetId, key }))
-    return { statusCode: 200, body: JSON.stringify({ assetId, uploadUrl, key }) }
+    return { statusCode: 200, body: JSON.stringify({ assetId, uploadUrl, downloadUrl, key }) }
   } catch (e: any) {
     console.error(JSON.stringify({ level: 'error', msg: 'createUploadUrl_failed', err: e?.message }))
     return { statusCode: 500, body: JSON.stringify({ title: 'Server error', detail: e?.message || String(e) }) }

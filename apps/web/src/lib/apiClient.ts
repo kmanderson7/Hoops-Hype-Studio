@@ -72,7 +72,7 @@ type RecommendMusicFn = {
 
 export const api = {
   createUploadUrl: (payload: { fileName: string; size: number; type: string; scope?: 'uploads' | 'logos' }) =>
-    postJson<{ assetId: string; uploadUrl: string; proxyUrl?: string; key?: string }>('createUploadUrl', payload),
+    postJson<{ assetId: string; uploadUrl: string; downloadUrl?: string; proxyUrl?: string; key?: string }>('createUploadUrl', payload),
   detectHighlights: (payload: { videoUrl?: string; assetId?: string; proxyUrl?: string; targetJersey?: string }) =>
     postJson<DetectHighlightsFn>('detectHighlights', payload),
   detectBeats: (payload: { assetId?: string; trackId?: string; trackUrl?: string; previewUrl?: string }) =>

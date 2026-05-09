@@ -194,9 +194,9 @@ export default function App() {
                         ...fallbackNotes,
                     ],
                 });
-                if (fallbackNotes.length > 0) {
-                    setRenderStatus('Analysis used stub data for one or more steps. Open System Health (Export panel) for details.');
-                }
+                // Fallback notes already get appended to InsightsPanel above; keep
+                // renderStatus reserved for live render progress so the user can see
+                // analysis is done without "Analysis used stub data" alarming them.
                 progressValue = 1;
                 setProcessingProgress(progressValue);
                 setStageStatus('analysis', 'complete');
@@ -304,7 +304,7 @@ export default function App() {
                     // Fall back to presigned PUT if Uppy fails
                 }
             }
-            const { uploadUrl, assetId: newAssetId, key } = await api.createUploadUrl({ fileName: file.name, size: file.size, type: file.type });
+            const { uploadUrl, downloadUrl, assetId: newAssetId, key } = await api.createUploadUrl({ fileName: file.name, size: file.size, type: file.type });
             // Upload via XHR to track progress (fetch lacks upload progress events)
             await new Promise((resolve, reject) => {
                 const xhr = new XMLHttpRequest();
@@ -329,16 +329,30 @@ export default function App() {
                 xhr.setRequestHeader('content-type', file.type);
                 xhr.send(file);
             });
-            // Start analysis pipeline immediately; ingest runs in background
+            // Seed proxyUrl with the presigned GET on the upload itself BEFORE
+            // ingestUpload triggers the analysis effect. This ensures the analysis
+            // pipeline (detectHighlights / detectBeats / recommendMusic) gets a
+            // real https:// URL Modal can fetch — without this, it would race the
+            // ingest call and end up with the local blob: URL, falling through to
+            // the stub branch and showing "configure GPU_WORKER_BASE_URL" even
+            // though the worker is fully wired up.
+            if (newAssetId && downloadUrl) {
+                setAssetInfo({ assetId: newAssetId, proxyUrl: downloadUrl });
+            }
+            // Start analysis pipeline immediately; Modal /ingest runs in background
+            // to generate the smaller 720p proxy used by the editor preview later.
             ingestUpload({ file, previewUrl });
             if (newAssetId && key) {
                 api.ingestAsset({ assetId: newAssetId, key })
                     .then(ingest => {
-                    if (ingest?.proxyUrl)
-                        setRenderStatus('Proxy generated; proceeding to analysis...');
-                    setAssetInfo({ assetId: newAssetId, proxyUrl: ingest?.proxyUrl });
+                    if (ingest?.proxyUrl) {
+                        // Modal returned a real 720p proxy URL — overwrite the upload
+                        // GET URL we seeded above so subsequent analysis/preview ops
+                        // use the smaller file.
+                        setAssetInfo({ assetId: newAssetId, proxyUrl: ingest.proxyUrl });
+                    }
                 })
-                    .catch(e => setRenderStatus(`Ingest error: ${e}`));
+                    .catch(e => console.warn('[ingest] failed; analysis will keep using the upload URL', e));
             }
         }
         catch (e) {
@@ -403,6 +417,7 @@ export default function App() {
         setCurrentStage('editor');
     };
     const handleOpenExport = () => {
+        console.debug('[stage-transition] editor->export');
         setStageStatus('editor', 'complete');
         setStageStatus('export', 'active');
         setCurrentStage('export');
@@ -419,6 +434,12 @@ export default function App() {
         setRenderStatus('Submitting render job...');
         setStageStatus('export', 'active');
         enabled.forEach((p) => markPresetProgress(p.id, 5));
+        console.debug('[render-start]', {
+            presets: enabled.map((p) => p.id),
+            assetId,
+            trackUrlPrefix: selectedTrack?.previewUrl ? selectedTrack.previewUrl.slice(0, 32) : '(none)',
+            targetJersey,
+        });
         (async () => {
             try {
                 // Build beat-aligned cut list (±0.3s) via the shared @hhs/core engine.
@@ -542,6 +563,11 @@ export default function App() {
                                 setRenderStatus('All exports complete. Signed URLs ready.');
                                 setStageStatus('export', 'complete');
                             }
+                            console.debug('[render-ui-update]', {
+                                downloads: finalDownloads.length,
+                                stage: finalDownloads.length > 0 ? 'complete' : 'active',
+                                finalizeFailed,
+                            });
                             setIsRendering(false);
                             window.clearInterval(poll);
                         }
@@ -577,8 +603,13 @@ export default function App() {
                         }
                     }
                     catch (e) {
+                        // Single transient blip shouldn't leave a zombie interval flipping
+                        // renderStatus on subsequent ticks. Stop the poll cleanly; user
+                        // can re-click Render to retry.
+                        console.warn('[render-poll] transient error; stopping poll', e);
                         setRenderStatus(`Render polling error: ${e}`);
                         setIsRendering(false);
+                        window.clearInterval(poll);
                     }
                 }, 800);
                 renderTimers.current.push(poll);
