@@ -129,13 +129,19 @@ export async function getRenderJobStatus(id: string): Promise<{
     }
   }
 
+  // Simulated fallback. Capped at 25% so when Modal's first real
+  // _write_progress lands (5/30/preset-bands/100) the curve doesn't visibly
+  // jump backwards. Without this cap, the simulated value can hit 99% in
+  // 9s while Modal is still starting up and then drops to 5 when the real
+  // value arrives.
   const elapsed = Date.now() - job.createdAt
   const ratio = Math.max(0, Math.min(1, elapsed / job.durationMs))
-  const progress = Math.round(ratio * 100)
+  const rawProgress = Math.round(ratio * 100)
+  const progress = hasDownloads ? rawProgress : Math.min(25, rawProgress)
   // Don't flip to 'done' until real downloads exist — otherwise we'd surface
   // a "ready" job whose files don't exist anywhere.
-  const status: JobStatus = progress === 0 ? 'queued' : progress >= 100 && hasDownloads ? 'done' : 'running'
-  const cappedProgress = hasDownloads ? progress : Math.min(99, progress)
+  const status: JobStatus = progress === 0 ? 'queued' : rawProgress >= 100 && hasDownloads ? 'done' : 'running'
+  const cappedProgress = hasDownloads ? rawProgress : progress
   const presets = job.presets.map((p, i) => ({ presetId: p, progress: Math.min(100, Math.max(5, cappedProgress - i * 5)) }))
   const eta = status === 'done' ? undefined : Math.max(1, Math.round((job.durationMs - elapsed) / 1000))
   const stage: RenderStage = status === 'done' ? 'done' : (job.stage || (status === 'queued' ? 'queued' : 'encoding'))
