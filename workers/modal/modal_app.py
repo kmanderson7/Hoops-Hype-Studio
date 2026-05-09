@@ -142,7 +142,12 @@ class OverlayMetadata(BaseModel):
 
 class RenderRequest(BaseModel):
     assetId: str
-    trackUrl: str
+    # Optional so renders without selected music still work — line 1505 already
+    # does `if req.trackUrl:` and skips the music mix gracefully when absent.
+    # Without this, users who skip the Music stage (or whose selected track URL
+    # got filtered out as unplayable) hit a pydantic 422 before any render code
+    # runs, and the frontend surfaces "Render failed (worker error 422)".
+    trackUrl: Optional[str] = None
     presets: List[RenderPreset]
     metadata: Optional[dict] = None  # overlays/branding/title/voiceover/sfx, etc.
 
