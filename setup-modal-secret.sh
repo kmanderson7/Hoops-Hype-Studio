@@ -96,7 +96,7 @@ fi
 # Required keys from .env (everything except GPU_WORKER_TOKEN, which we resolved above).
 declare -A vals
 missing=()
-for key in STORAGE_BUCKET STORAGE_REGION STORAGE_ACCESS_KEY STORAGE_SECRET_KEY STORAGE_ENDPOINT OPENAI_API_KEY; do
+for key in STORAGE_BUCKET STORAGE_REGION STORAGE_ACCESS_KEY STORAGE_SECRET_KEY STORAGE_ENDPOINT OPENAI_API_KEY UPSTASH_REDIS_REST_URL UPSTASH_REDIS_REST_TOKEN; do
   v="$(read_env "$key")"
   if [[ -z "$v" ]]; then
     missing+=("$key")
@@ -120,6 +120,8 @@ ARGS=(
   "STORAGE_SECRET_KEY=${vals[STORAGE_SECRET_KEY]}"
   "STORAGE_ENDPOINT=${vals[STORAGE_ENDPOINT]}"
   "OPENAI_API_KEY=${vals[OPENAI_API_KEY]}"
+  "UPSTASH_REDIS_REST_URL=${vals[UPSTASH_REDIS_REST_URL]}"
+  "UPSTASH_REDIS_REST_TOKEN=${vals[UPSTASH_REDIS_REST_TOKEN]}"
 )
 
 # Build a redacted preview (token replaced) for printing.
@@ -146,7 +148,12 @@ if (( RUN == 0 )); then
 fi
 
 echo -e "${CYAN}Running modal secret create --force ...${NC}"
-modal "${ARGS[@]}"
+if command -v modal &>/dev/null; then
+  modal "${ARGS[@]}"
+else
+  echo -e "${YELLOW}\`modal\` not on PATH; invoking via \`python -m modal\`.${NC}"
+  python -m modal "${ARGS[@]}"
+fi
 
 echo ""
 echo -e "${GREEN}Secret created/updated.${NC}"

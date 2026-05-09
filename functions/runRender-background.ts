@@ -75,6 +75,10 @@ export const handler: Handler = async (evt) => {
           trackUrl: body.trackUrl,
           presets: body.presets || [],
           metadata: body.metadata || {},
+          // Forward the jobId so Modal can write per-stage progress directly
+          // to Upstash Redis (`job:<id>:progress`). Without this, progress
+          // stays at the simulated elapsed-vs-randomMs() fake.
+          jobId: body.jobId,
         }),
         signal: ac.signal,
       })
@@ -90,8 +94,21 @@ export const handler: Handler = async (evt) => {
 
     if (!res.ok) {
       const errText = await res.text().catch(() => '')
-      await log({ level: 'error', msg: 'render_background_modal_error', jobId: body.jobId, status: res.status, detail: errText.slice(0, 500) })
-      await setRenderJobError(body.jobId, `modal_${res.status}`)
+      // Parse Modal's FastAPI error envelope: {"detail": "..."} — pluck the
+      // detail string into the job error so the UI can show it directly
+      // instead of the opaque "modal_500" code.
+      let detail = ''
+      try {
+        const parsed = JSON.parse(errText) as { detail?: string }
+        if (parsed && typeof parsed.detail === 'string') detail = parsed.detail
+      } catch {
+        detail = errText
+      }
+      await log({ level: 'error', msg: 'render_background_modal_error', jobId: body.jobId, status: res.status, detail: detail.slice(0, 500) })
+      const errorTag = detail
+        ? `modal_${res.status}: ${detail.slice(0, 240)}`
+        : `modal_${res.status}`
+      await setRenderJobError(body.jobId, errorTag)
       return { statusCode: 200, body: '' }
     }
 

@@ -572,6 +572,13 @@ export default function App() {
                         }
                         else if (status.status === 'error') {
                             const reason = status.error;
+                            // Modal-side detail comes through as `modal_<status>: <text>`.
+                            // Surface that text directly so the user sees the actual ffmpeg
+                            // failure (e.g. "Error initializing complex filters") instead
+                            // of just a numeric code.
+                            const modalDetail = reason && reason.startsWith('modal_')
+                                ? reason.split(': ').slice(1).join(': ').trim()
+                                : '';
                             const friendly = reason === 'modal_timeout'
                                 ? 'Render timed out — the GPU worker took too long to respond. Please retry.'
                                 : reason === 'no_outputs'
@@ -583,7 +590,9 @@ export default function App() {
                                             : reason && reason.startsWith('kickoff_')
                                                 ? "Render couldn't be dispatched to the GPU worker. Please retry."
                                                 : reason && reason.startsWith('modal_')
-                                                    ? `Render failed (worker error ${reason.replace('modal_', '')}). Please retry.`
+                                                    ? modalDetail
+                                                        ? `Render failed: ${modalDetail.slice(0, 220)}${modalDetail.length > 220 ? '…' : ''}`
+                                                        : `Render failed (worker error ${reason.replace('modal_', '')}). Please retry.`
                                                     : 'Render failed. Please retry.';
                             setRenderStatus(friendly);
                             setIsRendering(false);

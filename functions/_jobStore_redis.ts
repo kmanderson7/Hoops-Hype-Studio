@@ -25,6 +25,32 @@ async function redisCmd(cmd: string[]): Promise<any> {
   return res.json()
 }
 
+interface RealProgress {
+  progress: number
+  stage?: RenderStage
+  presets?: { presetId: string; progress: number }[]
+  note?: string
+  ts?: number
+}
+
+/**
+ * Read Modal-written progress from Upstash. Modal writes the JSON via
+ * `_write_progress(...)` at job:<id>:progress. Returns null if absent or
+ * malformed — caller falls back to the simulated elapsed-vs-randomMs path.
+ */
+async function readRealProgress(id: string): Promise<RealProgress | null> {
+  try {
+    const out = await redisCmd(['GET', `job:${id}:progress`])
+    const val = out?.result
+    if (!val || typeof val !== 'string') return null
+    const parsed = JSON.parse(val) as RealProgress
+    if (typeof parsed?.progress !== 'number') return null
+    return parsed
+  } catch {
+    return null
+  }
+}
+
 const randomMs = (min: number, max: number) => Math.floor(min + Math.random() * (max - min))
 
 export async function createRenderJob(params: { assetId?: string; trackId?: string; presets: string[] }): Promise<RenderJob> {
@@ -73,12 +99,41 @@ export async function getRenderJobStatus(id: string): Promise<{
     const presets = job.presets.map((p) => ({ presetId: p, progress: 0 }))
     return { status: 'error', stage: 'error', progress: 0, presets, error: job.error }
   }
+  // Prefer real progress written by Modal (`_write_progress`) over the
+  // simulated elapsed-vs-randomMs path. Real values give the UI a smooth
+  // climb from source-resolved → encoding → upload → done over the actual
+  // 30-180s rather than hitting 99% in 9s and stalling.
+  const real = await readRealProgress(id)
+  const hasDownloads = !!(job.downloads && job.downloads.length > 0)
+
+  if (real) {
+    const status: JobStatus =
+      real.progress === 0 && !hasDownloads ? 'queued' :
+      real.progress >= 100 && hasDownloads ? 'done' :
+      'running'
+    const cappedProgress = hasDownloads ? real.progress : Math.min(99, real.progress)
+    const presets = real.presets && real.presets.length === job.presets.length
+      ? real.presets
+      : job.presets.map((p, i) => ({
+          presetId: p,
+          progress: Math.min(100, Math.max(5, cappedProgress - i * 5)),
+        }))
+    const stage: RenderStage = status === 'done' ? 'done' : (real.stage || job.stage || 'encoding')
+    return {
+      status,
+      stage,
+      progress: cappedProgress,
+      eta: status === 'done' ? undefined : undefined,
+      presets,
+      downloads: status === 'done' ? job.downloads : undefined,
+    }
+  }
+
   const elapsed = Date.now() - job.createdAt
   const ratio = Math.max(0, Math.min(1, elapsed / job.durationMs))
   const progress = Math.round(ratio * 100)
   // Don't flip to 'done' until real downloads exist — otherwise we'd surface
   // a "ready" job whose files don't exist anywhere.
-  const hasDownloads = !!(job.downloads && job.downloads.length > 0)
   const status: JobStatus = progress === 0 ? 'queued' : progress >= 100 && hasDownloads ? 'done' : 'running'
   const cappedProgress = hasDownloads ? progress : Math.min(99, progress)
   const presets = job.presets.map((p, i) => ({ presetId: p, progress: Math.min(100, Math.max(5, cappedProgress - i * 5)) }))

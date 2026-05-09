@@ -99,14 +99,20 @@ if ($Token) {
   Write-Host 'Generated fresh GPU_WORKER_TOKEN (.env did not have one).' -ForegroundColor Yellow
 }
 
-# The 6 storage/OpenAI keys must come from .env.
+# The 8 keys we forward into the Modal secret. UPSTASH_* are required for
+# real progress reporting (Modal writes job:<id>:progress directly to Redis
+# so the UI gets honest numbers instead of the simulated elapsed-vs-randomMs
+# fake). Without them the render still works; the UI just falls back to the
+# old simulated progress.
 $required = @(
   'STORAGE_BUCKET',
   'STORAGE_REGION',
   'STORAGE_ACCESS_KEY',
   'STORAGE_SECRET_KEY',
   'STORAGE_ENDPOINT',
-  'OPENAI_API_KEY'
+  'OPENAI_API_KEY',
+  'UPSTASH_REDIS_REST_URL',
+  'UPSTASH_REDIS_REST_TOKEN'
 )
 $missing = $required | Where-Object { -not $envVars.ContainsKey($_) -or -not $envVars[$_] }
 if ($missing) {
@@ -125,7 +131,9 @@ $args = @(
   "STORAGE_ACCESS_KEY=$($envVars['STORAGE_ACCESS_KEY'])",
   "STORAGE_SECRET_KEY=$($envVars['STORAGE_SECRET_KEY'])",
   "STORAGE_ENDPOINT=$($envVars['STORAGE_ENDPOINT'])",
-  "OPENAI_API_KEY=$($envVars['OPENAI_API_KEY'])"
+  "OPENAI_API_KEY=$($envVars['OPENAI_API_KEY'])",
+  "UPSTASH_REDIS_REST_URL=$($envVars['UPSTASH_REDIS_REST_URL'])",
+  "UPSTASH_REDIS_REST_TOKEN=$($envVars['UPSTASH_REDIS_REST_TOKEN'])"
 )
 
 Write-Host ''
@@ -141,9 +149,20 @@ if (-not $Run) {
   exit 0
 }
 
-# Execute
+# Execute. Prefer the `modal` exe if it's on PATH; otherwise fall back to
+# `python -m modal` (the user-Scripts dir is often not on Windows PATH after
+# `pip install modal`).
+$useModule = $false
+if (-not (Get-Command modal -ErrorAction SilentlyContinue)) {
+  $useModule = $true
+  Write-Host '`modal` not on PATH; invoking via `python -m modal`.' -ForegroundColor Yellow
+}
 Write-Host 'Running modal secret create --force ...' -ForegroundColor Cyan
-& modal @args
+if ($useModule) {
+  & python -m modal @args
+} else {
+  & modal @args
+}
 $exit = $LASTEXITCODE
 if ($exit -ne 0) {
   Write-Host "modal CLI exited with code $exit" -ForegroundColor Red

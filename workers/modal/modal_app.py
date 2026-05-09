@@ -50,6 +50,11 @@ image = (
         "ultralytics==8.0.200",  # YOLOv8 for object detection
         "scenedetect[opencv]==0.6.2",  # Scene detection
         "openai==1.50.0",  # GPT-4o vision for highlight classification
+        # Pin httpx <0.28 — openai 1.50 passes a `proxies` kwarg into
+        # httpx.Client.__init__ which httpx 0.28+ removed. Without this pin
+        # every OpenAI call (highlights, voiceover, TTS) raises
+        # `Client.__init__() got an unexpected keyword argument 'proxies'`.
+        "httpx==0.27.2",
     )
 )
 
@@ -142,14 +147,146 @@ class OverlayMetadata(BaseModel):
 
 class RenderRequest(BaseModel):
     assetId: str
-    # Optional so renders without selected music still work — line 1505 already
-    # does `if req.trackUrl:` and skips the music mix gracefully when absent.
+    # Optional so renders without selected music still work — the music-mix
+    # branch already does `if req.trackUrl:` and skips gracefully when absent.
     # Without this, users who skip the Music stage (or whose selected track URL
     # got filtered out as unplayable) hit a pydantic 422 before any render code
     # runs, and the frontend surfaces "Render failed (worker error 422)".
     trackUrl: Optional[str] = None
     presets: List[RenderPreset]
     metadata: Optional[dict] = None  # overlays/branding/title/voiceover/sfx, etc.
+    # Optional jobId so Modal can write per-stage progress directly to Upstash
+    # Redis (`job:<id>:progress`). Netlify's getRenderJobStatus prefers this
+    # real value over the simulated-elapsed fallback. None = no progress writes.
+    jobId: Optional[str] = None
+
+
+# ESPN-grade cinematic color grade (preset-agnostic).
+# 1) Force yuv420p so downstream eq/curves/unsharp see a known pixel format.
+#    Previously used `colorspace=all=bt709:...` but that filter requires the
+#    input to have valid colorspace tags (color_space, color_primaries,
+#    color_trc); most real user uploads (phone cams, sample clips) don't tag
+#    these and the filter errors out with "Error while filtering: Invalid
+#    argument", killing every preset. Plain `format=yuv420p` is robust
+#    against any input and the output is still bt709 via `-pix_fmt yuv420p`
+#    at encode time.
+# 2) Mild contrast & saturation lift.
+# 3) Vibrance via curves preset (gentle S-curve on luma).
+# 4) Subtle unsharp for crisp edges without halos.
+GRADE_FILTER = (
+    "format=yuv420p,"
+    "eq=contrast=1.08:saturation=1.18:brightness=0.02:gamma=1.02,"
+    "curves=preset=increase_contrast,"
+    "unsharp=5:5:0.6:5:5:0.0"
+)
+
+
+def _write_progress(
+    job_id: Optional[str],
+    progress: int,
+    stage: str = "encoding",
+    presets: Optional[list] = None,
+    note: Optional[str] = None,
+) -> None:
+    """
+    Write real render progress to Upstash Redis at key `job:<id>:progress`
+    so Netlify's getRenderJobStatus can show it instead of the simulated
+    elapsed-vs-randomMs() fake. Best-effort: any error is logged and dropped
+    so a Redis blip can't kill an otherwise-successful render.
+
+    Stored as JSON: { progress: 0..100, stage, presets: [{presetId, progress}], note?, ts }
+    TTL 900s matches the per-IP render lock window.
+    """
+    if not job_id:
+        return
+    base = os.environ.get("UPSTASH_REDIS_REST_URL", "")
+    token = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
+    if not base or not token:
+        return
+    try:
+        import json as _json
+        import urllib.parse as _ulp
+        payload = {
+            "progress": max(0, min(100, int(progress))),
+            "stage": stage,
+            "presets": presets or [],
+            "ts": int(__import__("time").time()),
+        }
+        if note:
+            payload["note"] = note[:160]
+        body = _ulp.quote(_json.dumps(payload), safe="")
+        url = f"{base}/SETEX/{_ulp.quote(f'job:{job_id}:progress', safe='')}/900/{body}"
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            resp.read()
+    except Exception as e:
+        # Don't let observability break the render. Just log.
+        print(f"[progress] write failed (job={job_id}): {type(e).__name__}: {e}")
+
+
+def _has_audio_stream(path: pathlib.Path) -> bool:
+    """
+    ffprobe-detect whether the file has at least one audio stream.
+    Returns True on probe failure to preserve existing behaviour for normal
+    inputs (the audio chain's failure will then surface naturally in stderr);
+    only the verified-no-audio case is new.
+    """
+    try:
+        out = subprocess.check_output(
+            [
+                "ffprobe", "-v", "error", "-select_streams", "a",
+                "-show_entries", "stream=codec_type",
+                "-of", "default=nw=1:nk=1", str(path),
+            ],
+            text=True, timeout=15,
+        ).strip()
+        return bool(out)
+    except Exception:
+        return True
+
+
+def _ffmpeg_error_tail(stderr_bytes: Optional[bytes], max_chars: int = 600) -> str:
+    """
+    Pull the actually-useful tail of ffmpeg stderr. ffmpeg dumps thousands of
+    chars of `--enable-libxml2 --enable-libxvid ...` config first; the real
+    error (e.g. `Error initializing complex filters`, `[swscaler @ 0x] ...`,
+    `Stream specifier ':a' matches no streams`) gets pushed off the end if we
+    naively slice the last 500 chars.
+
+    Strategy: split on lines, keep ones that look error-relevant
+    (start with `[`, contain `Error`, `Failed`, `Invalid`, `Cannot`, `not found`,
+    or are stream-specifier complaints), join, and truncate.
+    Falls back to the raw tail if no matches found.
+    """
+    if not stderr_bytes:
+        return ""
+    text = stderr_bytes.decode("utf-8", errors="replace")
+    # Lines we WANT in the tail.
+    keep_markers = ("Error", "error:", "Failed", "Invalid", "Cannot", "not found",
+                    "matches no streams", "No such file", "deprecated", "[error]",
+                    "No such filter", "Invalid argument")
+    # Lines we DEFINITELY want to drop (ffmpeg's noisy progress + config dump).
+    skip_substrs = ("speed=", "size=", "bitrate=", "frame=", " time=",
+                    "--enable-", "--disable-", "configuration:")
+    relevant: list[str] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if any(s in line for s in skip_substrs):
+            continue
+        # Bracketed lines like `[swscaler @ 0x...] ...` are usually errors,
+        # but only keep them when they ALSO contain an error keyword — bare
+        # `[wav @ 0x...] Cannot check for SPDIF` is informational chaff.
+        if line.startswith("[") and not any(m in line for m in keep_markers):
+            continue
+        if line.startswith("[") or any(m in line for m in keep_markers):
+            relevant.append(line)
+    if relevant:
+        joined = " | ".join(relevant)
+        return joined[-max_chars:]
+    # No marker match — fall back to raw tail.
+    return text[-max_chars:]
 
 
 def _synthesize_sfx_palette(tmpdir: pathlib.Path) -> dict:
@@ -174,6 +311,24 @@ def _synthesize_sfx_palette(tmpdir: pathlib.Path) -> dict:
         "Steal": "anoisesrc=duration=0.06:color=pink:amplitude=0.5,afade=t=out:st=0:d=0.06,highpass=f=4000,volume=1.5",
         # Layup: muted tom, 180ms.
         "Layup": "sine=frequency=140:duration=0.18,afade=t=out:st=0:d=0.18,volume=1.4",
+        # Assist: soft mid woody tap (200Hz, 100ms) — accents without competing
+        # with the action that follows. "And-one" tap feel.
+        "Assist": "sine=frequency=200:duration=0.10,afade=t=out:st=0:d=0.10,volume=1.3",
+        # Rebound: mid-bass thump (90Hz, 200ms) — heavier than Layup, lighter
+        # than Dunk. Reads as "secured the board".
+        "Rebound": "sine=frequency=90:duration=0.20,afade=t=out:st=0:d=0.20,volume=1.7",
+        # Pass: snare-ish high-hat tick (50ms pink noise + highpass) — quick,
+        # rhythm-cut friendly.
+        "Pass": "anoisesrc=duration=0.05:color=pink:amplitude=0.5,afade=t=out:st=0:d=0.05,highpass=f=3000,volume=1.4",
+        # Foul: 350Hz mid-tone with longer fade (300ms) — whistle-feel without
+        # using a real whistle sample (royalty-clean). Clearly a pause-the-action
+        # cue, distinct from the action stingers.
+        "Foul": "sine=frequency=350:duration=0.30,afade=t=out:st=0.05:d=0.25,volume=1.2",
+        # Turnover: brown-noise low buffer-grunt (80ms) — implies disruption
+        # without being too jarring; reads as "lost the ball".
+        "Turnover": "anoisesrc=duration=0.08:color=brown:amplitude=0.6,afade=t=out:st=0:d=0.08,volume=1.5",
+        # "Other" intentionally absent — unrecognized actions get no stinger
+        # rather than a generic placeholder beep.
     }
     for action, expr in recipes.items():
         # Slug the action name for filename: "Three Pointer" → "three_pointer"
@@ -192,6 +347,115 @@ def _synthesize_sfx_palette(tmpdir: pathlib.Path) -> dict:
         except Exception as e:
             print(f"[sfx] failed for {action}: {e}")
     return palette
+
+
+def _generate_per_segment_voiceover(
+    segments: list,
+    target_jersey: Optional[str],
+    tmpdir: pathlib.Path,
+) -> Optional[list]:
+    """
+    Phase 2c — NBA-broadcast-level per-segment narration.
+
+    Pipeline:
+      1. One GPT-4o call returns a JSON array of `{seg_idx, line, when}` objects:
+         - `seg_idx` (0-based) maps to the corresponding segment.
+         - `line` is 4-10 words, present-tense, punchy ("WHAT a finish from #23!").
+         - `when` is "impact" or "cut" — where to land the line on the timeline.
+      2. One TTS call per line via `tts-1` (onyx voice for sports anchor tone).
+         Cost: ~$0.015/min, so 10 lines × ~1s each ≈ $0.0025 per render on top
+         of the existing single-anchor cost.
+      3. Returns a list of dicts: `[{seg_idx, path: Path, when: str}]` for the
+         caller to time-place via `adelay` filters at impact/cut frames.
+
+    Returns None on any error so the caller can fall back to the existing
+    single-anchor `_generate_voiceover` mode.
+    """
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key or not segments:
+        return None
+
+    try:
+        from openai import OpenAI
+        import json as _json
+        client = OpenAI(api_key=api_key, timeout=30.0)
+        subject = f"#{target_jersey}" if target_jersey else "the squad"
+
+        # Build a compact segment summary (action only — no PII).
+        seg_brief = [
+            {"idx": i, "action": (s.get("action") if isinstance(s, dict) else None) or "Other"}
+            for i, s in enumerate(segments[:12])
+        ]
+        prompt = (
+            f"You are an ESPN play-by-play anchor calling a hype reel for {subject}. "
+            f"The reel has these plays in order: {_json.dumps(seg_brief)}. "
+            f"For 4–8 of the most impactful plays (skip filler), produce a "
+            f"4–10 word call. Punchy, present tense, never cheesy. Vary openings; "
+            f"no 'and now', no 'tonight', no 'ladies and gentlemen'. "
+            f"Use {subject} where natural but don't repeat it on every line. "
+            f"Return ONLY a JSON array (no prose) of objects: "
+            f'{{"seg_idx": <int>, "line": <string>, "when": "impact" | "cut"}}. '
+            f"Default `when` to \"impact\" — the punchy beat lands on the action."
+        )
+
+        chat = client.chat.completions.create(
+            model="gpt-4o-2024-08-06",
+            max_tokens=600,
+            response_format={"type": "json_object"},
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You write ESPN-grade hype reel calls. Output strict JSON: "
+                        "{\"calls\": [{\"seg_idx\":int, \"line\":str, \"when\":\"impact\"|\"cut\"}]}. "
+                        "No markdown."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+        )
+        raw = (chat.choices[0].message.content or "").strip()
+        try:
+            envelope = _json.loads(raw)
+        except Exception:
+            print(f"[voiceover] per-segment GPT response was not JSON: {raw[:200]}")
+            return None
+        calls = envelope.get("calls") if isinstance(envelope, dict) else None
+        if not isinstance(calls, list) or not calls:
+            print(f"[voiceover] per-segment GPT returned no calls: {raw[:200]}")
+            return None
+
+        out: list = []
+        for i, call in enumerate(calls[:12]):  # cap so a runaway response can't burn TTS quota
+            if not isinstance(call, dict):
+                continue
+            seg_idx = call.get("seg_idx")
+            line = (call.get("line") or "").strip()
+            when = call.get("when") if call.get("when") in ("impact", "cut") else "impact"
+            if not isinstance(seg_idx, int) or not line or seg_idx < 0 or seg_idx >= len(segments):
+                continue
+            mp3_path = tmpdir / f"vo_seg{seg_idx}_{i}.mp3"
+            try:
+                speech = client.audio.speech.create(
+                    model="tts-1",
+                    voice="onyx",
+                    input=line,
+                    response_format="mp3",
+                )
+                speech.write_to_file(str(mp3_path))
+            except Exception as tts_err:
+                # One TTS failure shouldn't kill the whole montage's narration.
+                print(f"[voiceover] TTS failed for seg {seg_idx} ({line[:30]}...): {tts_err}")
+                continue
+            out.append({"seg_idx": seg_idx, "path": mp3_path, "when": when, "line": line})
+            print(f"[voiceover] per-seg {seg_idx} ({when}): {line}")
+
+        if not out:
+            return None
+        return out
+    except Exception as e:
+        print(f"[voiceover] per-segment generation failed: {e}")
+        return None
 
 
 def _generate_voiceover(
@@ -1228,6 +1492,7 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
             src_key = None
 
     if not src_key:
+        _write_progress(req.jobId, 0, stage="error", note="no source found in R2")
         raise HTTPException(
             status_code=404,
             detail=(
@@ -1236,6 +1501,8 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
                 f"Re-upload the clip or check that /ingest completed."
             ),
         )
+
+    _write_progress(req.jobId, 5, stage="encoding", note=f"source resolved: {src_key}")
 
     src_url = s3.generate_presigned_url(
         ClientMethod="get_object",
@@ -1436,6 +1703,11 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
                         out_starts.append(cursor)
                         # Next segment starts before this one ends by tdur (xfade)
                         cursor += max(0.05, dur - (tdur if i < len(seg_durations) - 1 else 0.0))
+                    # Total reel duration; apad needs an explicit cap or it
+                    # generates infinite silence and the resulting wav is
+                    # multi-GB before ffmpeg gives up. Round up generously to
+                    # cover any post-roll the encoder might want.
+                    total_reel_dur = max(0.5, cursor + 0.5)
 
                     # Build a single sfx_track.wav by mixing each adelay'd stinger
                     sfx_inputs: list[str] = []
@@ -1447,26 +1719,30 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
                         sfx_path = palette[action]
                         delay_ms = int(out_starts[i] * 1000)
                         sfx_inputs += ["-i", str(sfx_path)]
-                        # adelay applies per-channel; use the same value for stereo
-                        sfx_filters.append(f"[{keep}:a]adelay={delay_ms}|{delay_ms},apad[s{keep}]")
+                        # adelay applies per-channel; use the same value for stereo.
+                        # apad=whole_dur caps each input at the reel length so amix
+                        # has a finite-longest input to terminate on (otherwise the
+                        # output wav grows unbounded).
+                        sfx_filters.append(
+                            f"[{keep}:a]adelay={delay_ms}|{delay_ms},apad=whole_dur={total_reel_dur:.2f}[s{keep}]"
+                        )
                         keep += 1
                     if keep > 0:
                         sfx_track_path = tmpdir / "sfx_track.wav"
                         mix_inputs = "".join(f"[s{i}]" for i in range(keep))
-                        # apad on each + duration=longest on amix gives a track at least as long
-                        # as the latest stinger; ffmpeg will silence-pad at the end as needed.
                         filter_complex = "; ".join(sfx_filters) + f"; {mix_inputs}amix=inputs={keep}:duration=longest:dropout_transition=0[sfxout]"
                         cmd_sfx = ["ffmpeg", "-y"] + sfx_inputs + [
                             "-filter_complex", filter_complex,
                             "-map", "[sfxout]",
+                            "-t", f"{total_reel_dur:.2f}",  # belt-and-braces hard cap
                             "-ar", "48000", "-ac", "2",
                             str(sfx_track_path),
                         ]
                         try:
                             subprocess.run(cmd_sfx, check=True, capture_output=True)
                         except subprocess.CalledProcessError as e:
-                            stderr = e.stderr.decode("utf-8", errors="replace") if e.stderr else ""
-                            print(f"[sfx] track build failed: {stderr[-500:]}")
+                            err_tail = _ffmpeg_error_tail(e.stderr)
+                            print(f"[sfx] track build failed: {err_tail}")
                             sfx_track_path = None
             except Exception as e:
                 print(f"[sfx] palette/track failed: {e}")
@@ -1526,16 +1802,119 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
 
         vo_path: Optional[pathlib.Path] = None
         if meta_block.get("voiceover"):
-            candidate = tmpdir / "vo.mp3"
-            vo_result = _generate_voiceover(
-                meta_block.get("segments") or [],
-                target_jersey or None,
-                candidate,
-            )
-            if vo_result and candidate.exists():
-                vo_path = candidate
+            voice_segments = meta_block.get("segments") or []
+            # Phase 2c: try per-segment broadcast scripts first — multiple
+            # short anchor lines, each landing at a play's impact/cut frame.
+            # Falls back to the single-anchor read if GPT response is
+            # malformed or no segments available.
+            built_combined = False
+            if voice_segments and seg_files and seg_durations:
+                per_seg = _generate_per_segment_voiceover(
+                    voice_segments, target_jersey or None, tmpdir
+                )
+                if per_seg:
+                    # Recompute out-time start of each segment (same math used
+                    # for SFX placement) so delayed VO clips line up with the
+                    # actual cut timeline including xfade overlaps.
+                    out_starts: list[float] = []
+                    cursor = 0.0
+                    for i, dur in enumerate(seg_durations):
+                        out_starts.append(cursor)
+                        cursor += max(0.05, dur - (tdur if i < len(seg_durations) - 1 else 0.0))
+                    # Cap apad to the reel length (same fix as the SFX combine):
+                    # bare apad creates infinite silence and amix duration=longest
+                    # then never terminates, producing multi-GB junk wavs.
+                    total_reel_dur = max(0.5, cursor + 0.5)
 
-        for p in req.presets:
+                    # Build a combined VO track by adelay'ing each TTS clip
+                    # to its segment's impact/cut frame, then amix'ing.
+                    vo_inputs: list[str] = []
+                    vo_filters: list[str] = []
+                    keep = 0
+                    for entry in per_seg:
+                        seg_idx = int(entry.get("seg_idx", -1))
+                        clip_path = entry.get("path")
+                        when = entry.get("when", "impact")
+                        if seg_idx < 0 or seg_idx >= len(seg_durations) or not clip_path:
+                            continue
+                        seg_start = out_starts[seg_idx]
+                        # Land on impact (40% into the segment) or on the cut.
+                        # Slow-mo speed-ramp doesn't apply here because output_starts
+                        # are already in output time.
+                        offset = (seg_durations[seg_idx] * 0.4) if when == "impact" else 0.0
+                        delay_ms = int(max(0.0, seg_start + offset) * 1000)
+                        vo_inputs += ["-i", str(clip_path)]
+                        vo_filters.append(
+                            f"[{keep}:a]adelay={delay_ms}|{delay_ms},apad=whole_dur={total_reel_dur:.2f}[v{keep}]"
+                        )
+                        keep += 1
+
+                    if keep > 0:
+                        vo_combined = tmpdir / "vo.mp3"
+                        labels = "".join(f"[v{i}]" for i in range(keep))
+                        # amix normalizes by inputs; volume bump back up so
+                        # each line still lands punchy after mixing.
+                        amix_filter = (
+                            "; ".join(vo_filters)
+                            + f"; {labels}amix=inputs={keep}:duration=longest:dropout_transition=0,volume={keep:.1f}[vout]"
+                        )
+                        cmd = [
+                            "ffmpeg", "-y",
+                            *vo_inputs,
+                            "-filter_complex", amix_filter,
+                            "-map", "[vout]",
+                            "-t", f"{total_reel_dur:.2f}",  # hard cap belt-and-braces
+                            "-c:a", "libmp3lame", "-b:a", "192k", "-ar", "48000",
+                            str(vo_combined),
+                        ]
+                        try:
+                            subprocess.run(cmd, check=True, capture_output=True)
+                            if vo_combined.exists():
+                                vo_path = vo_combined
+                                built_combined = True
+                                print(f"[voiceover] built combined per-segment VO track ({keep} lines)")
+                        except subprocess.CalledProcessError as e:
+                            err_tail = _ffmpeg_error_tail(e.stderr)
+                            print(f"[voiceover] per-segment combine failed, falling back to single-anchor: {err_tail}")
+
+            if not built_combined:
+                # Fallback: single 40-70 word anchor read covering the whole montage.
+                candidate = tmpdir / "vo.mp3"
+                vo_result = _generate_voiceover(
+                    voice_segments,
+                    target_jersey or None,
+                    candidate,
+                )
+                if vo_result and candidate.exists():
+                    vo_path = candidate
+
+        # Track per-preset error details so a final all-failed 500 can carry
+        # the actual ffmpeg / upload reason instead of the previous opaque
+        # "all presets failed" message. Each entry is (presetId, detail_str).
+        preset_errors: list[tuple[str, str]] = []
+
+        # Per-preset progress for the UI. We slice the 30→90% band evenly
+        # across enabled presets so the bar advances visibly as each one
+        # finishes encoding. Below 30% covers source/segment prep; above 90%
+        # is upload/finalize.
+        total_presets = max(1, len(req.presets))
+        preset_progress: list[dict] = [
+            {"presetId": p.presetId, "progress": 0} for p in req.presets
+        ]
+
+        _write_progress(
+            req.jobId, 30, stage="encoding",
+            presets=preset_progress,
+            note=f"starting {total_presets} preset encode(s)",
+        )
+
+        # TODO Phase 2b: extract this body into a separate `@app.function`
+        # and call via `app.starmap(...)` for true parallel multi-preset
+        # encoding. Requires staging the prepped video + audio inputs to R2
+        # so the worker tasks can pull them. Today we bump cpu on the
+        # fastapi_app function to give each sequential ffmpeg headroom and
+        # rely on ffmpeg's own internal multithreading.
+        for preset_idx, p in enumerate(req.presets):
             out_path = tmpdir / f"out-{p.presetId}.mp4"
 
             # ---- Aspect-aware base scaler (subject-tracked crop for vertical / 4:5) ----
@@ -1545,9 +1924,12 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
             if p.presetId == "vertical-916":
                 target_w, target_h = 1080, 1920
                 target_ar = target_w / target_h  # 0.5625
-                # crop_w/in_h = target_ar  → crop_w = ih * target_ar (capped to iw)
-                crop_w_expr = f"min(iw,ih*{target_ar})"
-                crop_x_expr = f"max(0,min(iw-{crop_w_expr},(iw*{subject_x_avg})-({crop_w_expr})/2))"
+                # crop_w/in_h = target_ar  → crop_w = ih * target_ar (capped to iw).
+                # Backslash-escape commas inside expressions: ffmpeg's filter
+                # parser otherwise treats them as filter-chain separators and
+                # blows up with `No such filter: 'ih*0.5625):h'`.
+                crop_w_expr = f"min(iw\\,ih*{target_ar})"
+                crop_x_expr = f"max(0\\,min(iw-{crop_w_expr}\\,(iw*{subject_x_avg})-({crop_w_expr})/2))"
                 base_filter = (
                     f"crop=w={crop_w_expr}:h=ih:x={crop_x_expr}:y=0,"
                     f"scale={target_w}:{target_h}:flags=lanczos"
@@ -1555,8 +1937,8 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
             elif p.presetId == "highlight-45":
                 target_w, target_h = 1080, 1350
                 target_ar = target_w / target_h  # 0.8
-                crop_w_expr = f"min(iw,ih*{target_ar})"
-                crop_x_expr = f"max(0,min(iw-{crop_w_expr},(iw*{subject_x_avg})-({crop_w_expr})/2))"
+                crop_w_expr = f"min(iw\\,ih*{target_ar})"
+                crop_x_expr = f"max(0\\,min(iw-{crop_w_expr}\\,(iw*{subject_x_avg})-({crop_w_expr})/2))"
                 base_filter = (
                     f"crop=w={crop_w_expr}:h=ih:x={crop_x_expr}:y=0,"
                     f"scale={target_w}:{target_h}:flags=lanczos"
@@ -1568,25 +1950,9 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
                     "pad=1920:1080:(ow-iw)/2:(oh-ih)/2"
                 )
 
-            # ---- ESPN-grade cinematic color grade ----
-            # 1) Force yuv420p so downstream eq/curves/unsharp see a known
-            #    pixel format. We previously used `colorspace=all=bt709:...`
-            #    but that filter requires the *input* to have valid colorspace
-            #    tags (color_space, color_primaries, color_trc); most real
-            #    user uploads (phone cams, sample clips) don't tag these and
-            #    the filter errors out with "Error while filtering: Invalid
-            #    argument", killing every preset. Using plain `format=yuv420p`
-            #    is robust against any input and the output is still bt709
-            #    via the `-pix_fmt yuv420p` flag set on the encoder later.
-            # 2) Mild contrast & saturation lift
-            # 3) Vibrance via curves: gentle S-curve on luma, slight blue lift in highlights
-            # 4) Subtle unsharp for crisp edges (avoid halos)
-            grade_filter = (
-                "format=yuv420p,"
-                "eq=contrast=1.08:saturation=1.18:brightness=0.02:gamma=1.02,"
-                "curves=preset=increase_contrast,"
-                "unsharp=5:5:0.6:5:5:0.0"
-            )
+            # Use the module-level GRADE_FILTER (preset-agnostic). Locally
+            # bound to keep the f-string interpolation below readable.
+            grade_filter = GRADE_FILTER
 
             # ---- Build overlay text/box filters (drawtext/drawbox) ----
             text_filters: list[str] = []
@@ -1684,12 +2050,29 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
             # ---- Compose into a unified -filter_complex graph ----
             # Inputs:
             #   [0] = video (always)
-            #   [1] = music (optional)
-            #   [last] = logo (optional, if logo URL provided)
+            #   [1] = silent stereo bed via lavfi (only if source has no audio)
+            #   [next] = music (optional)
+            #   [next] = logo (optional)
+            #   [next] = voiceover (optional)
+            #   [next] = sfx track (optional)
             cmd = ["ffmpeg", "-y", "-i", str(input_path)]
             input_index = 1
             music_idx: Optional[int] = None
             logo_idx: Optional[int] = None
+
+            # If the source has no audio stream (silent phone capture, gameplay
+            # footage with mic muted, etc.) inject a silent stereo bed so the
+            # rest of the chain can keep referencing a uniform [src_a] handle.
+            # Without this, every [0:a] reference in the chain below makes
+            # ffmpeg fail with "Stream specifier ':a' matches no streams".
+            has_src_audio = _has_audio_stream(input_path)
+            silent_audio_idx: Optional[int] = None
+            if not has_src_audio:
+                cmd += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"]
+                silent_audio_idx = input_index
+                input_index += 1
+                print(f"[render] source has no audio; injected silent bed at input {silent_audio_idx} for preset={p.presetId}")
+            src_a = f"[0:a]" if has_src_audio else f"[{silent_audio_idx}:a]"
 
             if music_path is not None and music_path.exists():
                 cmd += ["-i", str(music_path)]
@@ -1747,7 +2130,7 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
             if music_idx is not None and vo_idx is not None:
                 # Source + music + VO. Music ducks under source AND VO; source ducks under VO.
                 chain.append(
-                    f"[0:a]volume=1.0,asplit=2[a_main][a_sc];"
+                    f"{src_a}volume=1.0,asplit=2[a_main][a_sc];"
                     f"[{music_idx}:a]volume=0.55[a_music];"
                     f"[{vo_idx}:a]volume=1.4,asplit=2[a_vo][a_vo_sc];"
                     f"[a_music][a_sc]sidechaincompress=threshold=0.06:ratio=8:attack=10:release=200[a_music_d];"
@@ -1757,30 +2140,30 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
                 )
             elif music_idx is not None:
                 chain.append(
-                    f"[0:a]volume=1.0,asplit=2[a_main][a_sc];"
+                    f"{src_a}volume=1.0,asplit=2[a_main][a_sc];"
                     f"[{music_idx}:a]volume=0.55[a_music];"
                     f"[a_music][a_sc]sidechaincompress=threshold=0.06:ratio=8:attack=10:release=200[a_music_d];"
                     f"[a_main][a_music_d]amix=inputs=2:duration=first:dropout_transition=2[a_pre]"
                 )
             elif vo_idx is not None:
                 chain.append(
-                    f"[0:a]volume=1.0[a_main];"
+                    f"{src_a}volume=1.0[a_main];"
                     f"[{vo_idx}:a]volume=1.4,asplit=2[a_vo][a_vo_sc];"
                     f"[a_main][a_vo_sc]sidechaincompress=threshold=0.04:ratio=6:attack=5:release=300[a_main_d];"
                     f"[a_main_d][a_vo]amix=inputs=2:duration=first:dropout_transition=2[a_pre]"
                 )
             else:
-                chain.append("[0:a]anull[a_pre]")
+                chain.append(f"{src_a}anull[a_pre]")
 
             # Optional SFX stinger track on top, then EBU R128 at the end
             if sfx_idx is not None:
                 chain.append(
                     f"[{sfx_idx}:a]volume=1.0[a_sfx];"
                     f"[a_pre][a_sfx]amix=inputs=2:duration=first:dropout_transition=0,"
-                    f"aloudnorm=I=-14:TP=-1.5:LRA=11:dual_mono=true[aout]"
+                    f"loudnorm=I=-14:TP=-1.5:LRA=11:dual_mono=true[aout]"
                 )
             else:
-                chain.append("[a_pre]aloudnorm=I=-14:TP=-1.5:LRA=11:dual_mono=true[aout]")
+                chain.append("[a_pre]loudnorm=I=-14:TP=-1.5:LRA=11:dual_mono=true[aout]")
             audio_map = ["-map", "[aout]"]
 
             filter_graph = "; ".join(chain)
@@ -1795,12 +2178,14 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
                 "-movflags", "+faststart",
                 str(out_path),
             ]
+            primary_err: Optional[str] = None
+            fallback_err: Optional[str] = None
             try:
                 subprocess.run(cmd, check=True, capture_output=True)
             except subprocess.CalledProcessError as e:
-                # Surface ffmpeg stderr to logs for debugging; rerun with simpler chain as fallback
-                stderr = e.stderr.decode("utf-8", errors="replace") if e.stderr else ""
-                print(f"[render] primary ffmpeg failed for preset={p.presetId}: {stderr[-2000:]}")
+                # Pull the actually-useful error tail (skip ffmpeg's --enable-* spam).
+                primary_err = _ffmpeg_error_tail(e.stderr)
+                print(f"[render] primary ffmpeg failed for preset={p.presetId}: {primary_err}")
                 fallback_cmd = [
                     "ffmpeg", "-y", "-i", str(input_path),
                     "-vf", f"{base_filter},{grade_filter}",
@@ -1813,9 +2198,13 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
                 try:
                     subprocess.run(fallback_cmd, check=True, capture_output=True)
                 except subprocess.CalledProcessError as e2:
-                    stderr2 = e2.stderr.decode("utf-8", errors="replace") if e2.stderr else ""
-                    print(f"[render] fallback ffmpeg also failed for preset={p.presetId}: {stderr2[-2000:]}")
-                    # Skip this preset; let other presets still produce outputs.
+                    fallback_err = _ffmpeg_error_tail(e2.stderr)
+                    print(f"[render] fallback ffmpeg also failed for preset={p.presetId}: {fallback_err}")
+                    # Both encode paths failed — record the more informative
+                    # primary error (the fallback is a simplified chain that
+                    # often fails for the same root reason) and move on so the
+                    # other presets still get their chance.
+                    preset_errors.append((p.presetId, primary_err or fallback_err or "encode failed"))
                     continue
 
             key = f"exports/{req.assetId}-{p.presetId}.mp4"
@@ -1828,6 +2217,9 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
                     ExtraArgs={
                         "ContentType": "video/mp4",
                         "ContentDisposition": f'attachment; filename="{download_name}"',
+                        # Phase 2d: tell CDN edges they may cache the signed
+                        # download for an hour. Saves R2 reads on retries.
+                        "CacheControl": "private, max-age=3600",
                     },
                 )
                 url = s3.generate_presigned_url(
@@ -1840,18 +2232,40 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
                     ExpiresIn=3600,
                 )
             except Exception as upload_err:
-                print(f"[render] s3 upload/presign failed for preset={p.presetId}: {type(upload_err).__name__}: {upload_err}")
+                detail = f"{type(upload_err).__name__}: {upload_err}"
+                print(f"[render] s3 upload/presign failed for preset={p.presetId}: {detail}")
+                preset_errors.append((p.presetId, f"upload failed: {detail}"))
                 continue
             outputs.append(RenderOutput(presetId=p.presetId, url=url, key=key))
+            preset_progress[preset_idx]["progress"] = 100
+            # Each preset completion bumps overall progress within the 30→90 band.
+            band_progress = 30 + int((preset_idx + 1) / total_presets * 60)
+            _write_progress(
+                req.jobId, band_progress, stage="encoding",
+                presets=preset_progress,
+                note=f"preset {preset_idx + 1}/{total_presets} done",
+            )
 
     if not outputs:
-        # Every preset failed — surface as 500 so the bg fn writes a real error
-        # to the job and the user sees a clear failure instead of forever-99%.
-        raise HTTPException(status_code=500, detail="all presets failed; check Modal logs for ffmpeg/upload errors")
+        # Every preset failed — surface a useful 500 so the bg fn writes a
+        # meaningful error to the job (e.g. "modal_500: cinematic-169=Error
+        # initializing complex filters") and the UI shows the actual reason.
+        if preset_errors:
+            joined = "; ".join(f"{pid}={msg}" for pid, msg in preset_errors)
+            detail = f"all presets failed: {joined}"[:1500]
+        else:
+            detail = "all presets failed; check Modal logs for ffmpeg/upload errors"
+        _write_progress(req.jobId, 0, stage="error", note=detail[:160])
+        raise HTTPException(status_code=500, detail=detail)
+    _write_progress(req.jobId, 100, stage="done", presets=preset_progress, note=f"{len(outputs)} preset(s) ready")
     return RenderResponse(outputs=outputs)
 
 
-@app.function(image=image, secrets=secrets, timeout=900, memory=4096, cpu=2.0)
+# cpu=4.0 gives multi-preset renders enough headroom for ffmpeg's internal
+# multithreading. Sequential per-preset encoding still applies (Phase 2b
+# Modal-native fan-out is deferred — see TODO at the per-preset loop), but
+# each ffmpeg instance now has 4 cores instead of 2 and finishes faster.
+@app.function(image=image, secrets=secrets, timeout=900, memory=4096, cpu=4.0)
 @modal.asgi_app()
 def fastapi_app():
     return web

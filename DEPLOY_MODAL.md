@@ -27,6 +27,8 @@ Create a secret named `hoops-hype-studio` with **all 7 keys** below — `modal_a
 | `STORAGE_SECRET_KEY` | **Yes** | R2/S3 auth |
 | `STORAGE_ENDPOINT` | **Yes for R2** | e.g. `https://<account>.r2.cloudflarestorage.com`. Omit only for actual AWS S3. |
 | `OPENAI_API_KEY` | Optional | GPT-4o action classification + TTS narration. Without it the worker falls back to YOLO+heuristic. |
+| `UPSTASH_REDIS_REST_URL` | Recommended | Real progress reporting — Modal writes `job:<id>:progress` directly so the UI shows honest progress instead of the simulated fake. |
+| `UPSTASH_REDIS_REST_TOKEN` | Recommended | Same — paired with the URL above. |
 
 **`GPU_WORKER_TOKEN` must match the value set in Netlify** (`GPU_WORKER_TOKEN` env var). Generate a fresh one once and use it in both places.
 
@@ -38,7 +40,9 @@ modal secret create hoops-hype-studio \
   STORAGE_ACCESS_KEY=<r2-access-key> \
   STORAGE_SECRET_KEY=<r2-secret-key> \
   STORAGE_ENDPOINT=https://<account>.r2.cloudflarestorage.com \
-  OPENAI_API_KEY=<sk-...>
+  OPENAI_API_KEY=<sk-...> \
+  UPSTASH_REDIS_REST_URL=<https://...upstash.io> \
+  UPSTASH_REDIS_REST_TOKEN=<token>
 ```
 
 For an automated path, use the helper scripts in the repo root: `setup-modal-secret.ps1` (Windows) or `setup-modal-secret.sh` (Linux/macOS). They read `.env`, generate the token if absent, and emit (or run) the full `modal secret create --force` command.
