@@ -175,9 +175,13 @@ class RenderRequest(BaseModel):
 # 4) Subtle unsharp for crisp edges without halos.
 GRADE_FILTER = (
     "format=yuv420p,"
-    "eq=contrast=1.08:saturation=1.18:brightness=0.02:gamma=1.02,"
-    "curves=preset=increase_contrast,"
-    "unsharp=5:5:0.6:5:5:0.0"
+    "eq=contrast=1.28:saturation=1.55:brightness=0.01:gamma=1.05,"
+    # Orange-teal telecine: warm highlights (red lifted), cool shadows (blue boosted in lows, cut in mids)
+    "curves=r='0/0 0.2/0.18 0.5/0.56 0.8/0.88 1/1'"
+    ":g='0/0 0.2/0.19 0.5/0.50 0.8/0.82 1/1'"
+    ":b='0/0 0.2/0.26 0.5/0.46 0.8/0.72 1/0.94',"
+    "unsharp=5:5:1.0:5:5:0.0,"
+    "vignette=PI/5"
 )
 
 
@@ -1526,7 +1530,7 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
                 seg_files: list[pathlib.Path] = []
                 seg_durations: list[float] = []
                 seg_actions: list[Optional[str]] = []  # per-segment action label for SFX keying
-                tdur = float(meta.get("transitionDuration", 0.18)) if isinstance(meta, dict) else 0.18
+                tdur = float(meta.get("transitionDuration", 0.28)) if isinstance(meta, dict) else 0.28
                 # Probe source duration so we can clamp segment windows. ffmpeg's
                 # `-ss <past_end> -to <past_end>` succeeds with exit 0 but writes
                 # a 0-byte mp4, which then breaks the downstream xfade chain
@@ -1544,13 +1548,9 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
                 except Exception:
                     src_dur = 0.0  # unknown → skip clamping
                 ttype = meta.get("transitionType", "fade") if isinstance(meta, dict) else "fade"
-                allowed = {"fade", "fadeblack", "wipeleft", "wiperight", "slideleft", "slideright"}
+                allowed = {"fade", "fadeblack", "flash", "wipeleft", "wiperight", "slideleft", "slideright"}
                 if ttype not in allowed:
-                    # treat 'flash' as fadeblack for a punchier cut
-                    if ttype == "flash":
-                        ttype = "fadeblack"
-                    else:
-                        ttype = "fade"
+                    ttype = "fade"
                 for i, seg in enumerate(cuts):
                     # Parse bounds
                     try:
@@ -1594,8 +1594,8 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
                     ramp_hi = None
                     if impact_t is not None:
                         rel = max(0.0, min(d, impact_t - start))
-                        ramp_lo = max(0.0, rel - 0.15)
-                        ramp_hi = min(d, rel + 0.15)
+                        ramp_lo = max(0.0, rel - 0.6)
+                        ramp_hi = min(d, rel + 0.6)
 
                     out_seg = tmpdir / f"seg_{i:02d}.mp4"
                     if ramp_lo is not None and ramp_hi is not None and (ramp_hi - ramp_lo) >= 0.05:
@@ -1604,7 +1604,7 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
                             f"[0:v]trim=start={0}:end={d},setpts=PTS-STARTPTS[vfull];"
                             f"[vfull]split=3[v0][v1][v2];"
                             f"[v0]trim=0:{ramp_lo},setpts=PTS-STARTPTS[v0t];"
-                            f"[v1]trim={ramp_lo}:{ramp_hi},setpts=(PTS-STARTPTS)/0.75[v1s];"
+                            f"[v1]trim={ramp_lo}:{ramp_hi},setpts=(PTS-STARTPTS)/0.4[v1s];"
                             f"[v2]trim={ramp_hi}:{d},setpts=PTS-STARTPTS[v2t];"
                             f"[v0t][v1s][v2t]concat=n=3:v=1:a=0[vout]"
                         )
@@ -1622,7 +1622,7 @@ async def render(req: RenderRequest, authorization: Optional[str] = Header(None)
                         ]
                         subprocess.run(cmd_cut, check=True)
                         # Adjust duration for slow-motion section
-                        d_for_seg = d + (ramp_hi - ramp_lo) * (1/0.75 - 1)
+                        d_for_seg = d + (ramp_hi - ramp_lo) * (1/0.4 - 1)
                     else:
                         cmd_cut = [
                             "ffmpeg", "-y",
